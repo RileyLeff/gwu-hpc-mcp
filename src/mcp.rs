@@ -585,7 +585,7 @@ fn error_with_details(err: AppError, extra: Option<serde_json::Value>) -> rmcp::
 
     let data = json!({
         "code": err.code(),
-        "details": extra.unwrap_or_else(|| json!(null))
+        "details": extra.unwrap_or(serde_json::Value::Null)
     });
 
     rmcp::ErrorData::new(code, err.to_string(), Some(data))

@@ -87,17 +87,17 @@ impl SessionManager {
         let mut exit_code: Option<i32> = None;
 
         loop {
-            if let Some(limit) = timeout {
-                if start.elapsed() > limit {
-                    let mut tail_buf = TailBuffer::new(4096);
-                    tail_buf.push(final_buffer.as_bytes());
-                    return Err(SessionExecFailure {
-                        error: AppError::SshTimeout(limit),
-                        duration: start.elapsed(),
-                        output: final_buffer.clone(),
-                        tail: tail_buf.to_string(),
-                    });
-                }
+            if let Some(limit) = timeout
+                && start.elapsed() > limit
+            {
+                let mut tail_buf = TailBuffer::new(4096);
+                tail_buf.push(final_buffer.as_bytes());
+                return Err(SessionExecFailure {
+                    error: AppError::SshTimeout(limit),
+                    duration: start.elapsed(),
+                    output: final_buffer.clone(),
+                    tail: tail_buf.to_lossy_string(),
+                });
             }
 
             let capture = match capture_pane(&self.context, name).await {
@@ -123,26 +123,26 @@ impl SessionManager {
                 }
             }
 
-            if let Some(pos) = capture.find(&sentinel_marker) {
-                if let Some(line_end) = capture[pos..].find('\n') {
-                    let line_end_abs = pos + line_end;
-                    let line = &capture[pos..line_end_abs];
-                    let code_str = line[sentinel_marker.len()..].trim();
-                    match code_str.parse::<i32>() {
-                        Ok(code) => exit_code = Some(code),
-                        Err(_) => {
-                            return Err(SessionExecFailure {
-                                error: AppError::Tmux(format!(
-                                    "Failed to parse tmux exit code from '{code_str}'"
-                                )),
-                                duration: start.elapsed(),
-                                output: final_buffer.clone(),
-                                tail: final_buffer.clone(),
-                            });
-                        }
+            if let Some(pos) = capture.find(&sentinel_marker)
+                && let Some(line_end) = capture[pos..].find('\n')
+            {
+                let line_end_abs = pos + line_end;
+                let line = &capture[pos..line_end_abs];
+                let code_str = line[sentinel_marker.len()..].trim();
+                match code_str.parse::<i32>() {
+                    Ok(code) => exit_code = Some(code),
+                    Err(_) => {
+                        return Err(SessionExecFailure {
+                            error: AppError::Tmux(format!(
+                                "Failed to parse tmux exit code from '{code_str}'"
+                            )),
+                            duration: start.elapsed(),
+                            output: final_buffer.clone(),
+                            tail: final_buffer.clone(),
+                        });
                     }
-                    break;
                 }
+                break;
             }
 
             last_buffer = capture;
@@ -170,7 +170,7 @@ impl SessionManager {
             exit_code,
             duration,
             output: final_buffer.clone(),
-            tail: tail.to_string(),
+            tail: tail.to_lossy_string(),
         })
     }
 }

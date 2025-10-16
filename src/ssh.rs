@@ -341,7 +341,7 @@ where
                                 error: AppError::SshSpawn(format!("ssh try_wait failed: {e}")),
                                 duration,
                                 streams,
-                                tail: tail.to_string(),
+                                tail: tail.to_lossy_string(),
                             });
                         }
                     }
@@ -393,7 +393,7 @@ where
                                 error: AppError::SshSpawn(format!("ssh try_wait failed: {e}")),
                                 duration,
                                 streams,
-                                tail: tail.to_string(),
+                                tail: tail.to_lossy_string(),
                             });
                         }
                     }
@@ -416,7 +416,7 @@ where
             error: AppError::SshTimeout(timeout_value.unwrap_or(Duration::from_secs(0))),
             duration,
             streams,
-            tail: tail.to_string(),
+            tail: tail.to_lossy_string(),
         });
     }
 
@@ -427,7 +427,7 @@ where
         exit_code: code,
         duration,
         streams,
-        tail: tail.to_string(),
+        tail: tail.to_lossy_string(),
     })
 }
 

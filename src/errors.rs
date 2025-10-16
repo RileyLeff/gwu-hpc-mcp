@@ -8,8 +8,10 @@ pub type AppResult<T> = Result<T, AppError>;
 pub enum AppError {
     #[error("ControlMaster requires 2FA: run {0}")]
     Needs2fa(String),
+    #[allow(dead_code)]
     #[error("ControlMaster not running")]
     MasterDown,
+    #[allow(dead_code)]
     #[error("Stale ControlMaster socket detected")]
     MasterStale,
     #[error("SSH spawn failed: {0}")]
@@ -20,6 +22,7 @@ pub enum AppError {
     DeniedByPolicy(String),
     #[error("tmux error: {0}")]
     Tmux(String),
+    #[allow(dead_code)]
     #[error("Unknown session: {0}")]
     UnknownSession(String),
     #[error("Config error: {0}")]

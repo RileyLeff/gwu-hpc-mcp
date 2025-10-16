@@ -286,6 +286,7 @@ impl ConfigManager {
         })
     }
 
+    #[allow(dead_code)]
     pub fn subscribe(&self) -> watch::Receiver<u64> {
         self.notifier.subscribe()
     }
@@ -339,6 +340,7 @@ impl ConfigManager {
         Ok(cluster.clone())
     }
 
+    #[allow(dead_code)]
     pub fn compiled(&self) -> CompiledConfig {
         self.inner.read().compiled.clone()
     }
@@ -393,13 +395,13 @@ fn compile_config(config: &Config) -> AppResult<CompiledConfig> {
         .iter()
         .map(|pattern| Regex::new(pattern).map_err(|e| AppError::Config(e.to_string())))
         .collect::<AppResult<Vec<_>>>()?;
-    if let Some(default_cluster) = &config.defaults.default_cluster {
-        if !clusters.contains_key(default_cluster) {
-            return Err(AppError::Config(format!(
-                "default_cluster '{}' not found in clusters",
-                default_cluster
-            )));
-        }
+    if let Some(default_cluster) = &config.defaults.default_cluster
+        && !clusters.contains_key(default_cluster)
+    {
+        return Err(AppError::Config(format!(
+            "default_cluster '{}' not found in clusters",
+            default_cluster
+        )));
     }
     Ok(CompiledConfig {
         heuristics: CompiledHeuristics {

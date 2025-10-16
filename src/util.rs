@@ -56,16 +56,12 @@ impl TailBuffer {
         }
     }
 
-    pub fn to_string(&self) -> String {
+    pub fn to_lossy_string(&self) -> String {
         let (first, second) = self.data.as_slices();
         let mut out = String::with_capacity(first.len() + second.len());
         out.push_str(&String::from_utf8_lossy(first));
         out.push_str(&String::from_utf8_lossy(second));
         out
-    }
-
-    pub fn clear(&mut self) {
-        self.data.clear();
     }
 }
 
@@ -78,6 +74,6 @@ mod tests {
         let mut buf = TailBuffer::new(4);
         buf.push(b"abcd");
         buf.push(b"ef");
-        assert_eq!(buf.to_string(), "cdef");
+        assert_eq!(buf.to_lossy_string(), "cdef");
     }
 }
