@@ -1,0 +1,165 @@
+version = 1
+
+[defaults]
+pty = true
+login_shell = true
+max_concurrent_execs = 4
+warn_on_login_compute = true
+default_cluster = "pegasus"
+default_cwd = "/scratch/<your_group>/<your_user>"
+
+[heuristics]
+denylist = ["rm -rf /", "mkfs", "shutdown", "reboot"]
+compute_markers = [
+  "CUDA_VISIBLE_DEVICES",
+  "(?i)python.(torch|tensorflow|jax)",
+  "\\bmpirun\\b",
+  "\\bsrun\\b"
+]
+
+[[clusters]]
+id = "pegasus"
+display_name = "GWU Pegasus"
+host = "pegasus.arc.gwu.edu"
+port = 22
+
+[clusters.ssh]
+control_path = "~/.gwu-hpc-mcp/cm-%r@%h_%p"
+server_alive_interval = 60
+server_alive_count_max = 3
+ssh_binary = "ssh"
+tmux_binary = "tmux"
+
+[clusters.access]
+login_nodes = [
+  "log001.pegasus.arc.gwu.edu",
+  "log002.pegasus.arc.gwu.edu",
+  "log003.pegasus.arc.gwu.edu",
+  "log004.pegasus.arc.gwu.edu"
+]
+require_vpn = true
+prohibit_login_compute = true
+
+[clusters.filesystems]
+lustre_root = "/scratch"
+groups_root = "/scratch"
+home_is_nfs = true
+groups_is_nfs = true
+scratch_recommended = true
+scratch_purge_policy_url = "https://hpc.gwu.edu/scratch-storage"
+
+[clusters.slurm]
+require_partition = true
+require_time_limit = true
+max_wall_time = "14-00:00:00"
+default_partition = "defq"
+default_time_limit = "01:00:00"
+
+[[clusters.slurm.partitions]]
+name = "defq"
+kind = "cpu"
+
+[[clusters.slurm.partitions]]
+name = "short"
+kind = "cpu"
+
+[[clusters.slurm.partitions]]
+name = "tiny"
+kind = "cpu"
+
+[[clusters.slurm.partitions]]
+name = "nano"
+kind = "cpu"
+
+[[clusters.slurm.partitions]]
+name = "highThru"
+kind = "cpu"
+notes = "High clock, low core-count nodes; good for serial/high-throughput tasks."
+
+[[clusters.slurm.partitions]]
+name = "highMem"
+kind = "cpu"
+notes = "Large-memory nodes."
+
+[[clusters.slurm.partitions]]
+name = "highCore"
+kind = "cpu"
+notes = "High core-count CPU nodes (7-day limit)."
+
+[[clusters.slurm.partitions]]
+name = "384gb"
+kind = "cpu"
+notes = "384 GB memory CPU nodes."
+
+[[clusters.slurm.partitions]]
+name = "short-384gb"
+kind = "cpu"
+notes = "384 GB memory nodes with 1-day limit."
+
+[[clusters.slurm.partitions]]
+name = "debug"
+kind = "cpu"
+notes = "Generic debug queue (4 hours)."
+
+[[clusters.slurm.partitions]]
+name = "debug-cpu"
+kind = "cpu"
+notes = "CPU-only debug queue."
+
+[[clusters.slurm.partitions]]
+name = "small-gpu"
+kind = "gpu"
+gpus = ["V100 x2"]
+
+[[clusters.slurm.partitions]]
+name = "large-gpu"
+kind = "gpu"
+gpus = ["V100 x4 (NVLink)"]
+
+[[clusters.slurm.partitions]]
+name = "med-gpu"
+kind = "gpu"
+notes = "Medium GPU nodes; 7-day limit."
+
+[[clusters.slurm.partitions]]
+name = "debug-gpu"
+kind = "gpu"
+
+[[clusters.slurm.partitions]]
+name = "ultra-gpu"
+kind = "gpu"
+notes = "Higher-end GPU nodes (7-day limit)."
+
+[[clusters.slurm.partitions]]
+name = "superChip"
+kind = "gpu"
+notes = "NVIDIA GH200 SuperChip nodes."
+
+[[clusters.slurm.partitions]]
+name = "viz"
+kind = "gpu"
+notes = "Visualization GPU node."
+
+[clusters.prompts]
+slurm_safety_template = """
+Always submit compute with Slurm using -p <partition> and -t <time>. cd to {{groups_root}}/<your_group>/<your_user> (scratch) before heavy work. Do not run compute on login nodes.
+
+Keep login-shell execution enabled (the default) so environment modules work. When exploring modules, prefer patterns like:
+  module avail | grep <name>
+  module spider <name>
+  module keyword <term>
+and pipe long listings through head/less to stay readable.
+"""
+
+[clusters.policy]
+template = """
+Pegasus ({{host}}) login nodes are for submission, data movement, compilation, and prep. Running jobs on login nodes is prohibited.
+Compute must be submitted via Slurm with both -p and -t; maximum wall time is 14 days.
+Use scratch for active workloads: {{groups_root}}. Home and groups (NFS) are not for running jobs. Scratch is purgeable; move long-term data elsewhere.
+Inspect with sinfo; monitor with squeue; review with sacct. VPN/on-campus access and 2FA are required.
+
+Environment modules load correctly when commands run inside a login shell; leave login_shell=true unless you have a specific reason not to. To discover modules without drowning in output, use:
+  module spider <name>        # shows availability and requirements
+  module keyword <term>       # fuzzy search descriptions
+  module avail | grep <term>  # filter long listings (pipe to head/less as needed)
+"""
