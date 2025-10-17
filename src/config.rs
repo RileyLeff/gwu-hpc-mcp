@@ -216,6 +216,28 @@ pub struct ClusterSlurmPartition {
     pub gpus: Vec<String>,
     #[serde(default)]
     pub notes: Option<String>,
+    #[serde(default)]
+    pub cpu_model: Option<String>,
+    #[serde(default)]
+    pub cpu_cores: Option<u32>,
+    #[serde(default)]
+    pub cpu_clock_ghz: Option<f32>,
+    #[serde(default)]
+    pub ram_gb: Option<u32>,
+    #[serde(default)]
+    pub interconnect: Option<String>,
+    #[serde(default)]
+    pub node_local_storage: Option<String>,
+    #[serde(default)]
+    pub gpu_model: Option<String>,
+    #[serde(default)]
+    pub gpu_count: Option<u32>,
+    #[serde(default)]
+    pub gpu_memory_gb: Option<u32>,
+    #[serde(default)]
+    pub gpu_total_memory_gb: Option<u32>,
+    #[serde(default)]
+    pub node_count: Option<u32>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, JsonSchema)]

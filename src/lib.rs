@@ -378,8 +378,8 @@ denylist = ["rm -rf /", "mkfs", "shutdown", "reboot"]
 compute_markers = [
   "CUDA_VISIBLE_DEVICES",
   "(?i)python.(torch|tensorflow|jax)",
-  "\\bmpirun\\b",
-  "\\bsrun\\b"
+  "\bmpirun\b",
+  "\bsrun\b"
 ]
 
 [[clusters]]
@@ -423,87 +423,196 @@ default_time_limit = "01:00:00"
 [[clusters.slurm.partitions]]
 name = "defq"
 kind = "cpu"
+cpu_model = "Dual Intel Xeon Gold 6148"
+cpu_cores = 40
+cpu_clock_ghz = 3.70
+ram_gb = 96
+interconnect = "Mellanox EDR Infiniband 100Gb"
+node_local_storage = "800 GB SSD (boot + node-local scratch)"
+notes = "General-purpose queue on 96 GB compute nodes."
 
 [[clusters.slurm.partitions]]
 name = "short"
 kind = "cpu"
+cpu_model = "Dual Intel Xeon Gold 6148"
+cpu_cores = 40
+cpu_clock_ghz = 3.70
+ram_gb = 96
+interconnect = "Mellanox EDR Infiniband 100Gb"
+node_local_storage = "800 GB SSD (boot + node-local scratch)"
+notes = "Same hardware as defq with 1-day time limit."
 
 [[clusters.slurm.partitions]]
 name = "tiny"
 kind = "cpu"
+cpu_model = "Dual Intel Xeon Gold 6148"
+cpu_cores = 40
+cpu_clock_ghz = 3.70
+ram_gb = 96
+interconnect = "Mellanox EDR Infiniband 100Gb"
+node_local_storage = "800 GB SSD (boot + node-local scratch)"
+notes = "Short jobs on standard compute nodes."
 
 [[clusters.slurm.partitions]]
 name = "nano"
 kind = "cpu"
+cpu_model = "Dual Intel Xeon Gold 6148"
+cpu_cores = 40
+cpu_clock_ghz = 3.70
+ram_gb = 96
+interconnect = "Mellanox EDR Infiniband 100Gb"
+node_local_storage = "800 GB SSD (boot + node-local scratch)"
+notes = "Burst jobs on standard compute nodes."
 
 [[clusters.slurm.partitions]]
 name = "highThru"
 kind = "cpu"
-notes = "High clock, low core-count nodes; good for serial/high-throughput tasks."
+cpu_model = "Dual Intel Xeon Gold 5122"
+cpu_cores = 8
+cpu_clock_ghz = 3.70
+ram_gb = 384
+interconnect = "Mellanox EDR Infiniband 100Gb"
+node_local_storage = "800 GB SSD (boot + node-local scratch)"
+notes = "High clock, low core-count nodes; good for serial/high-throughput workloads."
 
 [[clusters.slurm.partitions]]
 name = "highMem"
 kind = "cpu"
-notes = "Large-memory nodes."
+cpu_model = "Dual Intel Xeon Gold 6140M"
+cpu_cores = 36
+cpu_clock_ghz = 3.70
+ram_gb = 3072
+interconnect = "Mellanox EDR Infiniband 100Gb"
+node_local_storage = "800 GB SSD (boot + node-local scratch)"
+notes = "Large-memory nodes (3 TB RAM)."
 
 [[clusters.slurm.partitions]]
 name = "highCore"
 kind = "cpu"
-notes = "High core-count CPU nodes (7-day limit)."
+notes = "High core-count CPU nodes (7-day limit) — confirm hardware details."
 
 [[clusters.slurm.partitions]]
 name = "384gb"
 kind = "cpu"
+cpu_model = "Dual Intel Xeon Gold 6148"
+cpu_cores = 40
+cpu_clock_ghz = 3.70
+ram_gb = 384
+interconnect = "Mellanox EDR Infiniband 100Gb"
+node_local_storage = "800 GB SSD (boot + node-local scratch)"
 notes = "384 GB memory CPU nodes."
 
 [[clusters.slurm.partitions]]
 name = "short-384gb"
 kind = "cpu"
+cpu_model = "Dual Intel Xeon Gold 6148"
+cpu_cores = 40
+cpu_clock_ghz = 3.70
+ram_gb = 384
+interconnect = "Mellanox EDR Infiniband 100Gb"
+node_local_storage = "800 GB SSD (boot + node-local scratch)"
 notes = "384 GB memory nodes with 1-day limit."
 
 [[clusters.slurm.partitions]]
 name = "debug"
 kind = "cpu"
+cpu_model = "Dual Intel Xeon Gold 6148"
+cpu_cores = 40
+cpu_clock_ghz = 3.70
+ram_gb = 96
+interconnect = "Mellanox EDR Infiniband 100Gb"
+node_local_storage = "800 GB SSD (boot + node-local scratch)"
 notes = "Generic debug queue (4 hours)."
 
 [[clusters.slurm.partitions]]
 name = "debug-cpu"
 kind = "cpu"
+cpu_model = "Dual Intel Xeon Gold 6148"
+cpu_cores = 40
+cpu_clock_ghz = 3.70
+ram_gb = 96
+interconnect = "Mellanox EDR Infiniband 100Gb"
+node_local_storage = "800 GB SSD (boot + node-local scratch)"
 notes = "CPU-only debug queue."
 
 [[clusters.slurm.partitions]]
 name = "small-gpu"
 kind = "gpu"
-gpus = ["V100 x2"]
+gpu_model = "NVIDIA Tesla V100"
+gpu_count = 2
+ram_gb = 192
+cpu_model = "Dual Intel Xeon Gold 6148"
+cpu_cores = 40
+cpu_clock_ghz = 3.70
+interconnect = "Mellanox EDR Infiniband 100Gb"
+node_local_storage = "800 GB SSD (boot + node-local scratch)"
+notes = "Two V100 GPUs per node; omit --gres on queues backed by this hardware (full node allocation)."
 
 [[clusters.slurm.partitions]]
 name = "large-gpu"
 kind = "gpu"
-gpus = ["V100 x4 (NVLink)"]
+gpu_model = "NVIDIA Tesla V100 SXM2"
+gpu_count = 4
+gpu_memory_gb = 16
+gpu_total_memory_gb = 64
+ram_gb = 384
+cpu_model = "Dual Intel Xeon Gold 6140"
+cpu_cores = 36
+cpu_clock_ghz = 3.70
+interconnect = "Mellanox EDR Infiniband 100Gb (NVLink between GPUs)"
+node_local_storage = "800 GB SSD (boot + node-local scratch)"
+notes = "Four V100 SXM2 GPUs with NVLink."
 
 [[clusters.slurm.partitions]]
 name = "med-gpu"
 kind = "gpu"
-notes = "Medium GPU nodes; 7-day limit."
+notes = "Medium GPU nodes; 7-day limit — confirm exact hardware (likely newer accelerators)."
 
 [[clusters.slurm.partitions]]
 name = "debug-gpu"
 kind = "gpu"
+gpu_model = "NVIDIA Tesla V100"
+gpu_count = 2
+ram_gb = 192
+cpu_model = "Dual Intel Xeon Gold 6148"
+cpu_cores = 40
+cpu_clock_ghz = 3.70
+interconnect = "Mellanox EDR Infiniband 100Gb"
+node_local_storage = "800 GB SSD (boot + node-local scratch)"
+notes = "GPU debug queue (full node allocation; omit --gres)."
 
 [[clusters.slurm.partitions]]
 name = "ultra-gpu"
 kind = "gpu"
-notes = "Higher-end GPU nodes (7-day limit)."
+gpu_model = "NVIDIA A100"
+gpu_count = 8
+gpu_memory_gb = 80
+gpu_total_memory_gb = 640
+ram_gb = 512
+cpu_model = "Dual Intel Xeon Gold 5320"
+cpu_cores = 52
+cpu_clock_ghz = 2.20
+interconnect = "Mellanox EDR Infiniband 100Gb"
+node_local_storage = "800 GB SSD (boot + node-local scratch)"
+notes = "Eight A100 80GB GPUs per node."
 
 [[clusters.slurm.partitions]]
 name = "superChip"
 kind = "gpu"
-notes = "NVIDIA GH200 SuperChip nodes."
+gpu_model = "NVIDIA GH200 Grace Hopper Superchip"
+gpu_count = 1
+gpu_memory_gb = 96
+ram_gb = 480
+cpu_model = "NVIDIA Grace CPU"
+cpu_cores = 72
+interconnect = "NVLink-C2C"
+node_local_storage = "7.68 TB SSD"
+notes = "Grace Hopper Superchip nodes — confirm final production specs with HPC staff."
 
 [[clusters.slurm.partitions]]
 name = "viz"
 kind = "gpu"
-notes = "Visualization GPU node."
+notes = "Visualization GPU node — confirm hardware."
 
 [clusters.prompts]
 slurm_safety_template = """
@@ -524,10 +633,28 @@ Use scratch for active workloads: {{{{groups_root}}}}. Home and groups (NFS) are
 Inspect with sinfo; monitor with squeue; review with sacct. VPN/on-campus access and 2FA are required.
 
 Environment modules load correctly when commands run inside a login shell; leave login_shell=true unless you have a specific reason not to. To discover modules without drowning in output, use:
-  module spider <name>
-  module keyword <term>
-  module avail | grep <term>
-  (pipe long listings to head/less)
+  module spider <name>        # shows availability and requirements
+  module keyword <term>       # fuzzy search descriptions
+  module avail | grep <term>  # filter long listings (pipe to head/less as needed)
+
+Scratch directories can vary by group. If `cd {{{{groups_root}}}}/<group>/<user>` fails, run `ls {{{{groups_root}}}}/<group>` to confirm the exact subdirectory.
+
+Partition notes:
+  - `debug-gpu` and other GPU nodes grant the full node with its GPU; omit `--gres` flags.
+  - GPU queues generally have 7-day limits; `debug-*` partitions are capped at 4 hours.
+
+Apptainer tips:
+  - `module load squashfs/4.4` provides `mksquashfs`, required for Docker-based `apptainer exec`.
+  - Set `APPTAINER_CACHEDIR` to a scratch location for faster rebuilds.
+  - Bind scratch explicitly when running from other locations: `apptainer exec --bind {{{{groups_root}}}}:{{{{groups_root}}}} --nv ...`.
+  - Install helper tools (e.g., `uv`) once on the host and reuse them instead of relying on minimal container images.
+
+Troubleshooting checklist:
+  - `scontrol show job <id>` to inspect ExitCode and node allocation.
+  - `module avail` / `module spider` to locate missing binaries.
+  - `Invalid generic resource (gres)` usually means the queue manages GPUs automatically; remove manual `--gres` flags.
+  - `tmux`/`ssh` issues? Ensure the ControlMaster is running via `ghm status` or `gwu-hpc-mcp status`.
+  - If `ghm status` shows that the ControlMaster is not running, you need to instruct the user to run `ghm up`, as it has a 2FA step that only the user can complete.
 """
 "#
     )

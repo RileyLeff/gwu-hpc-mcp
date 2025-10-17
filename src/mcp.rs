@@ -357,8 +357,7 @@ impl rmcp::ServerHandler for McpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             instructions: Some(
-                "GWU Pegasus MCP server. Establish ControlMaster via `gwu-hpc-mcp up` before use."
-                    .into(),
+                "GWU Pegasus MCP server. Before running other tools: (1) establish the ControlMaster via `gwu-hpc-mcp up --cluster pegasus --user <netid>` (or `ghm up …`). (2) Call `hpc_describe` and read the policy/resource bundle (GPU etiquette, Apptainer tips, scratch guidance, troubleshooting checklist).".into(),
             ),
             capabilities: ServerCapabilities::builder()
                 .enable_tools()

@@ -68,13 +68,73 @@ fn render_partitions(cluster: &Cluster) -> String {
                 if let Some(kind) = part.kind.as_deref() {
                     detail.push_str(&format!(" ({kind})"));
                 }
-                if !part.gpus.is_empty() {
-                    detail.push_str(&format!(" GPUs: {}", part.gpus.join(", ")));
-                }
                 if let Some(notes) = part.notes.as_deref() {
                     detail.push_str(&format!(" — {}", notes));
                 }
                 lines.push(detail);
+
+                if let Some(node_count) = part.node_count {
+                    lines.push(format!("   Nodes in partition: {node_count}"));
+                }
+
+                if part.cpu_model.is_some()
+                    || part.cpu_cores.is_some()
+                    || part.cpu_clock_ghz.is_some()
+                {
+                    let mut pieces = Vec::new();
+                    if let Some(model) = part.cpu_model.as_deref() {
+                        pieces.push(model.to_string());
+                    }
+                    if let Some(cores) = part.cpu_cores {
+                        pieces.push(format!("{cores} cores"));
+                    }
+                    if let Some(clock) = part.cpu_clock_ghz {
+                        pieces.push(format!("{clock:.2} GHz"));
+                    }
+                    lines.push(format!("   CPU: {}", pieces.join(" · ")));
+                }
+
+                if let Some(ram) = part.ram_gb {
+                    lines.push(format!("   RAM: {ram} GB"));
+                }
+
+                if part.gpu_model.is_some()
+                    || part.gpu_count.is_some()
+                    || part.gpu_memory_gb.is_some()
+                    || part.gpu_total_memory_gb.is_some()
+                    || !part.gpus.is_empty()
+                {
+                    let mut pieces = Vec::new();
+                    match (part.gpu_count, part.gpu_model.as_deref()) {
+                        (Some(count), Some(model)) => {
+                            pieces.push(format!("{count} × {model}"));
+                        }
+                        (Some(count), None) => {
+                            pieces.push(format!("{count} GPU(s)"));
+                        }
+                        (None, Some(model)) => pieces.push(model.to_string()),
+                        (None, None) => {}
+                    }
+                    if let Some(mem) = part.gpu_memory_gb {
+                        pieces.push(format!("{mem} GB each"));
+                    }
+                    if let Some(total) = part.gpu_total_memory_gb {
+                        pieces.push(format!("{total} GB total"));
+                    }
+                    if pieces.is_empty() && !part.gpus.is_empty() {
+                        pieces.push(part.gpus.join(", "));
+                    }
+                    if !pieces.is_empty() {
+                        lines.push(format!("   GPU: {}", pieces.join(" · ")));
+                    }
+                }
+
+                if let Some(interconnect) = part.interconnect.as_deref() {
+                    lines.push(format!("   Interconnect: {interconnect}"));
+                }
+                if let Some(storage) = part.node_local_storage.as_deref() {
+                    lines.push(format!("   Node-local storage: {storage}"));
+                }
             }
             lines.join("\n")
         }
