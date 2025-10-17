@@ -1,5 +1,68 @@
 # gwu-hpc-mcp
 
+This is Riley's prototype tool for allowing LLM agents, such as OpenAI's [Codex CLI](https://developers.openai.com/codex/cli/) or Anthropic's [Claude Code](https://www.claude.com/product/claude-code), to interact with the High-Performance Computing resources at George Washington University.
+
+## What It Can Do
+
+Use natural language to instruct your LLM agent 
+
+## How It Works
+
+### For You, The End User
+
+#### Initial Setup
+
+Note that this server only works on unix or unix-like systems: Linux, MacOS, or WSL on Windows. This will not work in a native windows environment like Powershell.
+
+1. Install the server in any one of the following ways: 
+
+via cargo (available once I make this repo public): 
+## Install Options
+
+### Using Cargo (recommended)
+```bash
+cargo install --path .
+# or once the repo is public:
+# cargo install --git https://github.com/<org>/gwu-hpc-mcp
+```
+
+### Build from source
+```bash
+cargo build --release
+cp target/release/gwu-hpc-mcp /usr/local/bin/
+```
+
+### Prebuilt binaries
+Download the latest release artifact and place it on your `$PATH` (to be provided once CI publishes archives).
+
+### Initialize the config
+```bash
+# scaffold with defaults and your scratch path
+gwu-hpc-mcp config init --default-cwd /scratch/groups/<group>/<user>
+# override output location or overwrite an existing file if needed
+gwu-hpc-mcp config init --default-cwd /scratch/groups/<group>/<user> --output ~/.gwu-hpc-mcp/config.toml --force
+```
+
+Alternatively, copy the example:
+```bash
+mkdir -p ~/.gwu-hpc-mcp
+cp examples/pegasus.config.toml ~/.gwu-hpc-mcp/config.toml
+# then edit ~/.gwu-hpc-mcp/config.toml manually
+```
+
+## FAQ
+
+- *What is MCP?*
+  - [**M**odel **C**ontext **P**rotocol](https://modelcontextprotocol.io/docs/getting-started/intro) is a standard for exposing external tools to language models -- a MCP server's job is to accept tokens (words, text, etc) from a language model and convert them into actions or tool use. You can find many MCP servers for many different applications [here](https://www.claude.com/product/claude-code).
+- *Why not just use an off-the-shelf SSH MCP tool?*
+  - GWU's HPC has a 2FA step that was very awkward to handle with the SSH MCP tools I tried. This is a simple attempt at a more suitable tool for this particular job.
+- *Can I use this with Github Copilot, Qwen Code, Opencode, Gemini CLI, Amp, Roo, or whatever other agent I'm using?*
+  - Yes, as long as your agent supports MCP, which is fairly standard across agent implementations at this point.
+- *Why is this written in rust? Most MCP servers I see elsewhere are written in typescript or python.*
+  - I got very frustrated with managing the statefulness of the ssh connection + a runtime. Using the [MCP Rust SDK](https://github.com/modelcontextprotocol/rust-sdk) was a much more pleasant experience.
+
+
+
 ## Overview
 - Exposes the George Washington University (GWU) Pegasus HPC cluster to MCP-compatible hosts (e.g., Codex CLI) over stdio.
 - Provides high-fidelity remote shell execution and tmux-backed persistent sessions via a user-managed OpenSSH ControlMaster.
@@ -69,6 +132,8 @@ command = "/absolute/path/to/gwu-hpc-mcp"
 args = ["serve-stdio", "--config", "/Users/you/.gwu-hpc-mcp/config.toml"]
 env = { GWU_HPC_MCP_USER = "your_netid" }
 ```
+When installed via Cargo, the crate also ships a short alias `ghm`, so you can swap `command = "ghm"` if you prefer the shorthand.
+
 Steps:
 1. Ensure `gwu-hpc-mcp` is on your `$PATH` and the ControlMaster is up.
 2. Restart Codex CLI; the server should appear under available MCP servers.

@@ -162,4 +162,22 @@ Environment modules load correctly when commands run inside a login shell; leave
   module spider <name>        # shows availability and requirements
   module keyword <term>       # fuzzy search descriptions
   module avail | grep <term>  # filter long listings (pipe to head/less as needed)
+
+Scratch directories can vary by group. If `cd {{groups_root}}/<group>/<user>` fails, run `ls {{groups_root}}/<group>` to confirm the exact subdirectory.
+
+Partition notes:
+  - `debug-gpu` grants the full node with its GPU; omit `--gres` flags.
+  - GPU queues generally have 7-day limits; `debug-*` partitions are capped at 4 hours.
+
+Apptainer tips:
+  - `module load squashfs/4.4` provides `mksquashfs`, required for Docker-based `apptainer exec`.
+  - Set `APPTAINER_CACHEDIR` to a scratch location for faster rebuilds.
+  - Bind scratch explicitly when running from other locations: `apptainer exec --bind {{groups_root}}:{{groups_root}} --nv ...`.
+  - Install helper tools (e.g., `uv`) once on the host and reuse them instead of relying on minimal container images.
+
+Troubleshooting checklist:
+  - `scontrol show job <id>` to inspect ExitCode and node allocation.
+  - `module avail` / `module spider` to locate missing binaries.
+  - `Invalid generic resource (gres)` usually means the queue manages GPUs automatically; remove manual `--gres` flags.
+  - `tmux`/`ssh` issues? Ensure the ControlMaster is running via `ghm status` or `gwu-hpc-mcp status`.
 """
