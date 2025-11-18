@@ -15,7 +15,7 @@ use rmcp::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use tokio::sync::Semaphore;
 
 use crate::config::{Cluster, ConfigManager, ConfigSnapshot};
@@ -294,25 +294,27 @@ impl McpServer {
         }))
     }
 
-    #[tool(
+  #[tool(
         name = "hpc_describe",
         description = "Describe cluster configuration and policy context."
     )]
     pub async fn hpc_describe(
         &self,
         Parameters(params): Parameters<ClusterScopedParams>,
-    ) -> Result<Json<DescribeResponse>, rmcp::ErrorData> {
+    ) -> Result<Json<DescribeResponse>, rmcp::ErrorData> { // <--- REVERTED TO STRUCT
         let snapshot = self.snapshot();
         let cluster = self
             .acquire_cluster(params.cluster.as_deref())
             .map_err(to_mcp_error)?;
         let resources = render_resources(&cluster);
+        
         Ok(Json(DescribeResponse {
             cluster: (*cluster).clone(),
             config_version: snapshot.version,
             resources,
         }))
     }
+
 
     #[tool(
         name = "health_check",
@@ -551,9 +553,12 @@ pub struct SessionExecResponse {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct DescribeResponse {
-    #[schemars(with = "serde_json::Value")]
+    // FIX: Force the schema for "Cluster" to be written directly here 
+    // instead of creating a "$ref: #/definitions/Cluster" which fails to resolve.
+    #[schemars(with = "HashMap<String, Value>")]
     pub cluster: Cluster,
     pub config_version: u64,
+    #[schemars(with = "HashMap<String, Value>")]
     pub resources: RenderedResources,
 }
 
