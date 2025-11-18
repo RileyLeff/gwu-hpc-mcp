@@ -551,6 +551,7 @@ pub struct SessionExecResponse {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct DescribeResponse {
+    #[schemars(with = "serde_json::Value")]
     pub cluster: Cluster,
     pub config_version: u64,
     pub resources: RenderedResources,
