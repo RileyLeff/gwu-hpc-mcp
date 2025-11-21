@@ -228,6 +228,8 @@ impl McpServer {
             .exec(
                 &params.name,
                 &params.command,
+                params.cwd.as_deref(),
+                &params.env,
                 params.timeout_s.map(Duration::from_secs),
                 |chunk| {
                     if chunk.is_empty() {
@@ -294,25 +296,33 @@ impl McpServer {
         }))
     }
 
-  #[tool(
-        name = "hpc_describe",
-        description = "Describe cluster configuration and policy context."
-    )]
+      #[tool(
+          name = "hpc_describe",
+          description = "CRITICAL: Provides essential details on cluster policies, filesystem best practices, Slurm partitions, and module loading guidance. Agents MUST call and interpret its output before submitting jobs, moving data, or configuring environments to ensure compliance and efficiency."
+      )]
     pub async fn hpc_describe(
         &self,
         Parameters(params): Parameters<ClusterScopedParams>,
-    ) -> Result<Json<DescribeResponse>, rmcp::ErrorData> { // <--- REVERTED TO STRUCT
+    ) -> Result<Json<String>, rmcp::ErrorData> {
         let snapshot = self.snapshot();
         let cluster = self
             .acquire_cluster(params.cluster.as_deref())
             .map_err(to_mcp_error)?;
         let resources = render_resources(&cluster);
-        
-        Ok(Json(DescribeResponse {
+
+        let output = HpcDescribeOutput {
             cluster: (*cluster).clone(),
             config_version: snapshot.version,
             resources,
-        }))
+        };
+
+        let toml_string = toml::to_string_pretty(&output)
+            .map_err(|e| rmcp::ErrorData::internal_error(
+                "Failed to serialize describe output to TOML",
+                Some(json!({ "error": e.to_string() }))
+            ))?;
+        
+        Ok(Json(toml_string))
     }
 
 
@@ -521,6 +531,9 @@ pub struct SessionOpenParams {
 pub struct SessionExecParams {
     pub name: String,
     pub command: String,
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
     pub timeout_s: Option<u64>,
     pub cluster: Option<String>,
 }
@@ -552,13 +565,9 @@ pub struct SessionExecResponse {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
-pub struct DescribeResponse {
-    // FIX: Force the schema for "Cluster" to be written directly here 
-    // instead of creating a "$ref: #/definitions/Cluster" which fails to resolve.
-    #[schemars(with = "HashMap<String, Value>")]
+pub struct HpcDescribeOutput {
     pub cluster: Cluster,
     pub config_version: u64,
-    #[schemars(with = "HashMap<String, Value>")]
     pub resources: RenderedResources,
 }
 
@@ -713,3 +722,4 @@ mod tests {
         assert!(parse_hpc_uri("file://tmp").is_none());
     }
 }
+

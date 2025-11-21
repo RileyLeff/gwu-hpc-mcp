@@ -51,6 +51,8 @@ impl SessionManager {
         &self,
         name: &str,
         command: &str,
+        cwd: Option<&str>,
+        env: &HashMap<String, String>,
         timeout: Option<Duration>,
         mut on_chunk: F,
     ) -> Result<SessionExecResult, SessionExecFailure>
@@ -58,11 +60,19 @@ impl SessionManager {
         F: FnMut(&str) -> AppResult<()>,
     {
         validate_name(name).map_err(|e| SessionExecFailure::from_error(e, Duration::ZERO))?;
+
+        let mut pre_command = String::new();
+        if let Some(path) = cwd {
+            pre_command.push_str(&format!("cd {} && ", escape_for_shell(path)));
+        }
+        for (key, value) in env {
+            pre_command.push_str(&format!("export {}={} && ", escape_for_shell(key), escape_for_shell(value)));
+        }
         let sentinel_id = Uuid::new_v4().to_string();
         let sentinel_marker = format!("MCP_DONE:{sentinel_id}:");
         let sentinel_line_prefix = format!("\n{sentinel_marker}");
         let combined_command = format!(
-            "{command}; printf '\\n{marker}%s\\n' $?",
+            "{pre_command}{command}; printf '\\n{marker}%s\\n' $?",
             marker = sentinel_marker
         );
         let target = format!("{name}:0.0");
@@ -123,7 +133,7 @@ impl SessionManager {
                 }
             }
 
-            if let Some(pos) = capture.find(&sentinel_marker)
+            if let Some(pos) = capture.rfind(&sentinel_marker)
                 && let Some(line_end) = capture[pos..].find('\n')
             {
                 let line_end_abs = pos + line_end;

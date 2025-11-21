@@ -344,9 +344,8 @@ impl ConfigManager {
         } else if let Some(default_id) = compiled.default_cluster.clone() {
             default_id
         } else {
-            return Err(AppError::Config(
-                "No cluster specified and no default_cluster configured".to_string(),
-            ));
+            // Hardcoded fallback to "pegasus" as requested
+            "pegasus".to_string()
         };
         let Some(cluster) = compiled.clusters.get(&target_id) else {
             let known = compiled
