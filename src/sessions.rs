@@ -63,10 +63,18 @@ impl SessionManager {
 
         let mut pre_command = String::new();
         if let Some(path) = cwd {
-            pre_command.push_str(&format!("cd {} && ", escape_for_shell(path)));
+            let escaped = escape_for_shell(path);
+            pre_command.push_str(&format!(
+                "if [ -d {p} ]; then cd {p}; else echo \"WARN: cwd {p} not found; using $HOME\" 1>&2; cd \"$HOME\"; fi; ",
+                p = escaped
+            ));
         }
         for (key, value) in env {
-            pre_command.push_str(&format!("export {}={} && ", escape_for_shell(key), escape_for_shell(value)));
+            pre_command.push_str(&format!(
+                "export {}={} && ",
+                escape_for_shell(key),
+                escape_for_shell(value)
+            ));
         }
         let sentinel_id = Uuid::new_v4().to_string();
         let sentinel_marker = format!("MCP_DONE:{sentinel_id}:");
@@ -133,26 +141,31 @@ impl SessionManager {
                 }
             }
 
-            if let Some(pos) = capture.rfind(&sentinel_marker)
-                && let Some(line_end) = capture[pos..].find('\n')
-            {
-                let line_end_abs = pos + line_end;
-                let line = &capture[pos..line_end_abs];
-                let code_str = line[sentinel_marker.len()..].trim();
+            let search_start = last_buffer.len().saturating_sub(sentinel_line_prefix.len());
+            let search_slice = &capture[search_start..];
+            if let Some(rel_pos) = search_slice.rfind(&sentinel_line_prefix) {
+                let pos = search_start + rel_pos + sentinel_line_prefix.len();
+                let line_tail = &capture[pos..];
+                let line_end = line_tail.find('\n').unwrap_or(line_tail.len());
+                let code_str = line_tail[..line_end].trim();
                 match code_str.parse::<i32>() {
-                    Ok(code) => exit_code = Some(code),
+                    Ok(code) => {
+                        exit_code = Some(code);
+                        break;
+                    }
                     Err(_) => {
+                        let mut tail_buf = TailBuffer::new(4096);
+                        tail_buf.push(final_buffer.as_bytes());
                         return Err(SessionExecFailure {
                             error: AppError::Tmux(format!(
                                 "Failed to parse tmux exit code from '{code_str}'"
                             )),
                             duration: start.elapsed(),
                             output: final_buffer.clone(),
-                            tail: final_buffer.clone(),
+                            tail: tail_buf.to_lossy_string(),
                         });
                     }
                 }
-                break;
             }
 
             last_buffer = capture;

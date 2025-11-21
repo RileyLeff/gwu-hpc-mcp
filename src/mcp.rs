@@ -15,7 +15,7 @@ use rmcp::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::Semaphore;
 
 use crate::config::{Cluster, ConfigManager, ConfigSnapshot};
@@ -74,6 +74,13 @@ impl McpServer {
     }
 }
 
+fn normalize_cluster_id<'a>(id: Option<&'a str>) -> Option<&'a str> {
+    match id {
+        Some(s) if s.trim().is_empty() => None,
+        other => other,
+    }
+}
+
 #[tool_router]
 impl McpServer {
     #[tool(
@@ -87,7 +94,7 @@ impl McpServer {
     ) -> Result<Json<ShellExecResponse>, rmcp::ErrorData> {
         let snapshot = self.snapshot();
         let cluster = self
-            .acquire_cluster(params.cluster.as_deref())
+            .acquire_cluster(normalize_cluster_id(params.cluster.as_deref()))
             .map_err(to_mcp_error)?;
         let context = self.build_context(cluster.clone());
         let permit = self
@@ -188,7 +195,7 @@ impl McpServer {
         Parameters(params): Parameters<SessionOpenParams>,
     ) -> Result<Json<SessionResponse>, rmcp::ErrorData> {
         let cluster = self
-            .acquire_cluster(params.cluster.as_deref())
+            .acquire_cluster(normalize_cluster_id(params.cluster.as_deref()))
             .map_err(to_mcp_error)?;
         let context = self.build_context(cluster.clone());
         ensure_master(&context, &self.remote_user).await?;
@@ -217,7 +224,7 @@ impl McpServer {
         peer: rmcp::service::Peer<rmcp::RoleServer>,
     ) -> Result<Json<SessionExecResponse>, rmcp::ErrorData> {
         let cluster = self
-            .acquire_cluster(params.cluster.as_deref())
+            .acquire_cluster(normalize_cluster_id(params.cluster.as_deref()))
             .map_err(to_mcp_error)?;
         let context = self.build_context(cluster.clone());
         ensure_master(&context, &self.remote_user).await?;
@@ -280,7 +287,7 @@ impl McpServer {
         Parameters(params): Parameters<SessionCloseParams>,
     ) -> Result<Json<SessionResponse>, rmcp::ErrorData> {
         let cluster = self
-            .acquire_cluster(params.cluster.as_deref())
+            .acquire_cluster(normalize_cluster_id(params.cluster.as_deref()))
             .map_err(to_mcp_error)?;
         let context = self.build_context(cluster.clone());
         ensure_master(&context, &self.remote_user).await?;
@@ -296,17 +303,17 @@ impl McpServer {
         }))
     }
 
-      #[tool(
-          name = "hpc_describe",
-          description = "CRITICAL: Provides essential details on cluster policies, filesystem best practices, Slurm partitions, and module loading guidance. Agents MUST call and interpret its output before submitting jobs, moving data, or configuring environments to ensure compliance and efficiency."
-      )]
+    #[tool(
+        name = "hpc_describe",
+        description = "CRITICAL: Provides essential details on cluster policies, filesystem best practices, Slurm partitions, and module loading guidance. Agents MUST call and interpret its output before submitting jobs, moving data, or configuring environments to ensure compliance and efficiency."
+    )]
     pub async fn hpc_describe(
         &self,
         Parameters(params): Parameters<ClusterScopedParams>,
     ) -> Result<Json<String>, rmcp::ErrorData> {
         let snapshot = self.snapshot();
         let cluster = self
-            .acquire_cluster(params.cluster.as_deref())
+            .acquire_cluster(normalize_cluster_id(params.cluster.as_deref()))
             .map_err(to_mcp_error)?;
         let resources = render_resources(&cluster);
 
@@ -316,15 +323,15 @@ impl McpServer {
             resources,
         };
 
-        let toml_string = toml::to_string_pretty(&output)
-            .map_err(|e| rmcp::ErrorData::internal_error(
+        let toml_string = toml::to_string_pretty(&output).map_err(|e| {
+            rmcp::ErrorData::internal_error(
                 "Failed to serialize describe output to TOML",
-                Some(json!({ "error": e.to_string() }))
-            ))?;
-        
+                Some(json!({ "error": e.to_string() })),
+            )
+        })?;
+
         Ok(Json(toml_string))
     }
-
 
     #[tool(
         name = "health_check",
@@ -336,7 +343,7 @@ impl McpServer {
     ) -> Result<Json<HealthCheckResponse>, rmcp::ErrorData> {
         let snapshot = self.snapshot();
         let cluster = self
-            .acquire_cluster(params.cluster.as_deref())
+            .acquire_cluster(normalize_cluster_id(params.cluster.as_deref()))
             .map_err(to_mcp_error)?;
         let context = self.build_context(cluster.clone());
         let control_path = context.control_path().map_err(to_mcp_error)?;
@@ -406,7 +413,7 @@ impl rmcp::ServerHandler for McpServer {
                 .and_then(|v| v.as_str())
                 .map(String::from)
         }) {
-            Some(cluster_id) => self.acquire_cluster(Some(&cluster_id)),
+            Some(cluster_id) => self.acquire_cluster(normalize_cluster_id(Some(&cluster_id))),
             None => self.acquire_cluster(None),
         };
         let result = match cluster {
@@ -722,4 +729,3 @@ mod tests {
         assert!(parse_hpc_uri("file://tmp").is_none());
     }
 }
-

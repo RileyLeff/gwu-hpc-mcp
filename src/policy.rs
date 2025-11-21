@@ -55,6 +55,12 @@ fn render_policy(cluster: &Cluster, vars: &HashMap<&'static str, String>) -> Str
     if cluster.filesystems.home_is_nfs {
         lines.push("Home directories are NFS backed; avoid heavy compute there.".to_string());
     }
+    if has_gpu_partition(cluster) {
+        lines.push(
+            "For quick GPU probes, interactive `srun --pty` can be flaky; prefer `sbatch --wrap \"hostname; nvidia-smi\"`."
+                .to_string(),
+        );
+    }
     lines.join("\n")
 }
 
@@ -171,11 +177,15 @@ fn render_filesystem(fs: &ClusterFilesystems) -> String {
 }
 
 fn render_slurm_prompt(cluster: &Cluster, vars: &HashMap<&'static str, String>) -> Option<String> {
-    cluster
-        .prompts
-        .slurm_safety_template
-        .as_deref()
-        .map(|tpl| render_template(tpl, vars))
+    cluster.prompts.slurm_safety_template.as_deref().map(|tpl| {
+        let mut text = render_template(tpl, vars);
+        if has_gpu_partition(cluster) {
+            text.push_str(
+                "\nNote: interactive `srun --pty` can be flaky; for quick GPU checks prefer `sbatch --wrap \"hostname; nvidia-smi\"`.",
+            );
+        }
+        text
+    })
 }
 
 fn render_template(template: &str, vars: &HashMap<&'static str, String>) -> String {
@@ -209,6 +219,20 @@ fn template_vars(cluster: &Cluster) -> HashMap<&'static str, String> {
         }
     }
     vars
+}
+
+fn has_gpu_partition(cluster: &Cluster) -> bool {
+    cluster
+        .slurm
+        .as_ref()
+        .map(|slurm| {
+            slurm.partitions.iter().any(|p| {
+                matches!(p.kind.as_deref(), Some("gpu"))
+                    || !p.gpus.is_empty()
+                    || p.gpu_model.is_some()
+            })
+        })
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
