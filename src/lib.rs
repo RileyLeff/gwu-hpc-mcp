@@ -643,6 +643,11 @@ Partition notes:
   - `debug-gpu` and other GPU nodes grant the full node with its GPU; omit `--gres` flags.
   - GPU queues generally have 7-day limits; `debug-*` partitions are capped at 4 hours.
 
+GPU submission etiquette on Pegasus:
+  - GPUs are node-local; the scheduler does not honor `--gres`/`--gpus` on these partitions and will reject the request. Just choose the GPU partition and set `-N`, `-n`, and `-t`.
+  - To ensure isolation, request a full node (`-N1 -n1 --exclusive`) instead of GRES.
+  - Avoid `--gres`/`--gpus` entirely; if you see `Invalid generic resource (gres)` or `Requested GRES option unsupported`, drop those flags.
+
 Apptainer tips:
   - `module load squashfs/4.4` provides `mksquashfs`, required for Docker-based `apptainer exec`.
   - Set `APPTAINER_CACHEDIR` to a scratch location for faster rebuilds.

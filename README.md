@@ -2,9 +2,9 @@
 
 This is Riley's prototype tool for allowing LLM agents, such as OpenAI's [Codex CLI](https://developers.openai.com/codex/cli/) or Anthropic's [Claude Code](https://www.claude.com/product/claude-code), to interact with the High-Performance Computing resources at George Washington University.
 
-## What It Can Do
+## Why this exists
 
-Use natural language to instruct your LLM agent 
+The LLM can dink around the terminal much, much faster than I can and we make mistakes at about the same rate.
 
 ## How It Works
 
