@@ -167,7 +167,7 @@ pub async fn spawn_master_interactive(context: &SshContext) -> AppResult<()> {
             context.cluster.ssh.server_alive_count_max
         ))
         .arg("-o")
-        .arg("ControlPersist=8h")
+        .arg("ControlPersist=yes")
         .arg("-p")
         .arg(context.cluster.port.to_string())
         .arg(join_user_host(&context.user, &context.cluster.host))
