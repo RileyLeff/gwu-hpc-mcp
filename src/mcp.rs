@@ -15,7 +15,7 @@ use rmcp::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::json;
 use tokio::sync::Semaphore;
 
 use crate::config::{Cluster, ConfigManager, ConfigSnapshot};
@@ -310,7 +310,7 @@ impl McpServer {
     pub async fn hpc_describe(
         &self,
         Parameters(params): Parameters<ClusterScopedParams>,
-    ) -> Result<Json<String>, rmcp::ErrorData> {
+    ) -> Result<Json<HpcDescribeResponse>, rmcp::ErrorData> {
         let snapshot = self.snapshot();
         let cluster = self
             .acquire_cluster(normalize_cluster_id(params.cluster.as_deref()))
@@ -323,14 +323,14 @@ impl McpServer {
             resources,
         };
 
-        let toml_string = toml::to_string_pretty(&output).map_err(|e| {
+        let details_toml = toml::to_string_pretty(&output).map_err(|e| {
             rmcp::ErrorData::internal_error(
                 "Failed to serialize describe output to TOML",
                 Some(json!({ "error": e.to_string() })),
             )
         })?;
 
-        Ok(Json(toml_string))
+        Ok(Json(HpcDescribeResponse { details_toml }))
     }
 
     #[tool(
@@ -521,6 +521,7 @@ pub struct ShellExecParams {
 pub struct ShellExecResponse {
     pub ok: bool,
     pub exit_code: i32,
+    #[schemars(with = "i64")]
     pub duration_ms: u64,
     pub streams: HashMap<String, String>,
     pub tail: String,
@@ -566,12 +567,13 @@ pub struct SessionResponse {
 pub struct SessionExecResponse {
     pub ok: bool,
     pub exit_code: i32,
+    #[schemars(with = "i64")]
     pub duration_ms: u64,
     pub streams: HashMap<String, String>,
     pub tail: String,
 }
 
-#[derive(Debug, Serialize, JsonSchema)]
+#[derive(Debug, Serialize)]
 pub struct HpcDescribeOutput {
     pub cluster: Cluster,
     pub config_version: u64,
@@ -579,10 +581,16 @@ pub struct HpcDescribeOutput {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
+pub struct HpcDescribeResponse {
+    pub details_toml: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct HealthCheckResponse {
     pub master_state: String,
     pub control_path: String,
     pub message: Option<String>,
+    #[schemars(with = "i64")]
     pub config_version: u64,
 }
 
