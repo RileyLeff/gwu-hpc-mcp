@@ -142,6 +142,11 @@ that contains your settings.
 
 ## Connect your agent
 
+For copy-paste registration commands, user/global scope, reconnect instructions,
+and agent-led setup, see [Claude Code and OpenAI Codex setup](docs/client-setup.md).
+It includes Windows-native clients launching ghm through WSL.
+
+
 For clients using the common JSON `mcpServers` format, merge this into the
 client's MCP configuration (do not replace unrelated server entries):
 
@@ -240,6 +245,14 @@ before disconnecting or resetting it.
 in the MCP initialization response, so agents receive the VPN, reconnection,
 no-code-guessing, and shared-session rules even if they never read this README.
 The policy returned by `hpc_describe` repeats the authentication guidance.
+
+## CLI use without MCP registration
+
+Humans and agents can run `ghm status`, `ghm doctor`, and `ghm test` directly from
+a shell. `test` runs the fixed `hostname && pwd` check; there is no general-purpose
+`ghm exec` command. For arbitrary commands and tmux tools, register MCP or use a
+script that speaks MCP to `ghm serve-stdio`. See the
+[CLI versus MCP explanation](docs/client-setup.md#cli-use-without-client-registration).
 
 ## Tools and behavior
 
