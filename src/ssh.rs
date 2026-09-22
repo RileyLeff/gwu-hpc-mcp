@@ -252,6 +252,10 @@ where
         .arg(&control_path)
         .arg("-o")
         .arg("ControlMaster=no")
+        .arg("-o")
+        .arg("BatchMode=yes")
+        .arg("-o")
+        .arg("ConnectTimeout=10")
         .arg("-p")
         .arg(context.cluster.port.to_string());
     if req.pty {
@@ -263,6 +267,7 @@ where
 
     let remote_command = build_remote_command(&req);
     ssh_cmd.arg(remote_command);
+    ssh_cmd.kill_on_drop(true);
     ssh_cmd.stdin(Stdio::null());
     ssh_cmd.stdout(Stdio::piped());
     ssh_cmd.stderr(Stdio::piped());
@@ -421,7 +426,7 @@ where
     }
 
     let exit_status = status_opt.expect("status present");
-    let code = exit_status.code().unwrap_or_default();
+    let code = exit_status.code().unwrap_or(255);
 
     Ok(ExecResult {
         exit_code: code,
@@ -439,7 +444,7 @@ fn build_remote_command(req: &ExecRequest) -> String {
     for (key, value) in &req.env {
         statements.push(format!("export {}={}", key, escape_for_shell(value)));
     }
-    statements.push(req.command.clone());
+    statements.push(format!("eval {}", escape_for_shell(&req.command)));
     let joined = statements.join(" && ");
     if req.login_shell {
         format!("bash -lc {}", escape_for_shell(&joined))
@@ -494,4 +499,27 @@ fn spawn_stream_pump(
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn failed_cwd_stops_entire_multistatement_command() {
+        let req = ExecRequest {
+            command: "printf first; printf MUST_NOT_RUN".into(),
+            cwd: Some("/nonexistent-ghm-test-directory".into()),
+            env: HashMap::new(),
+            pty: false,
+            login_shell: false,
+            timeout: None,
+        };
+        let result = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(build_remote_command(&req))
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        assert!(result.stdout.is_empty());
+    }
 }

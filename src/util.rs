@@ -11,7 +11,7 @@ use crate::errors::{AppError, AppResult};
 pub fn expand_path(input: &str) -> AppResult<PathBuf> {
     if input.starts_with("~/") || input == "~" {
         let home = env::var("HOME").map_err(|e| AppError::Io(format!("HOME not set: {e}")))?;
-        let trimmed = input.trim_start_matches("~/");
+        let trimmed = if input == "~" { "" } else { &input[2..] };
         if trimmed.is_empty() {
             Ok(PathBuf::from(home))
         } else {
@@ -67,7 +67,19 @@ impl TailBuffer {
 
 #[cfg(test)]
 mod tests {
-    use super::TailBuffer;
+    use super::{TailBuffer, expand_path, validate_env};
+
+    #[test]
+    fn validate_environment_names_and_bare_home() {
+        assert!(validate_env(&[("GOOD_VAR".into(), "a b".into())].into()).is_ok());
+        for key in ["", "1BAD", "BAD;echo", "A=B"] {
+            assert!(validate_env(&[(key.into(), "x".into())].into()).is_err());
+        }
+        assert_eq!(
+            expand_path("~").unwrap(),
+            std::path::PathBuf::from(std::env::var("HOME").unwrap())
+        );
+    }
 
     #[test]
     fn tail_buffer_keeps_recent_bytes() {
@@ -76,4 +88,20 @@ mod tests {
         buf.push(b"ef");
         assert_eq!(buf.to_lossy_string(), "cdef");
     }
+}
+
+pub fn validate_env(env: &std::collections::HashMap<String, String>) -> AppResult<()> {
+    for key in env.keys() {
+        let mut chars = key.chars();
+        if !chars
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            return Err(AppError::InvalidInput(format!(
+                "Invalid environment variable name: {key}"
+            )));
+        }
+    }
+    Ok(())
 }

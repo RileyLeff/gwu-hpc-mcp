@@ -64,7 +64,7 @@ impl McpServer {
             .map(|(name, data)| (name, String::from_utf8_lossy(&data).to_string()))
             .collect();
         ShellExecResponse {
-            ok: true,
+            ok: result.exit_code == 0,
             exit_code: result.exit_code,
             duration_ms: result.duration.as_millis() as u64,
             streams,
@@ -92,6 +92,7 @@ impl McpServer {
         Parameters(params): Parameters<ShellExecParams>,
         peer: rmcp::service::Peer<rmcp::RoleServer>,
     ) -> Result<Json<ShellExecResponse>, rmcp::ErrorData> {
+        crate::util::validate_env(&params.env).map_err(to_mcp_error)?;
         let snapshot = self.snapshot();
         let cluster = self
             .acquire_cluster(normalize_cluster_id(params.cluster.as_deref()))
@@ -266,7 +267,7 @@ impl McpServer {
         {
             Ok(result) => {
                 let response = SessionExecResponse {
-                    ok: true,
+                    ok: result.exit_code == 0,
                     exit_code: result.exit_code,
                     duration_ms: result.duration.as_millis() as u64,
                     streams: HashMap::from([("tmux".to_string(), result.output)]),
@@ -353,13 +354,13 @@ impl McpServer {
             MasterState::Missing => (
                 "Missing".to_string(),
                 Some(format!(
-                    "ControlMaster not established. Run: gwu-hpc-mcp up --cluster {} --user {}",
+                    "Cluster connection is missing. Tell the user to check GW VPN if off campus, then run ghm up --cluster {} --user {} in their terminal and complete 2FA themselves. Never guess or submit codes.",
                     cluster.id, self.remote_user
                 )),
             ),
             MasterState::Stale => (
                 "Stale".to_string(),
-                Some("Existing ControlMaster socket appears stale; run 'gwu-hpc-mcp down' then 'up'.".to_string()),
+                Some("Cluster connection appears stale. Tell the user to check GW VPN and reconnect with ghm up in their terminal. Never guess or submit 2FA codes. Coordinate before resetting a connection shared with other clients.".to_string()),
             ),
         };
         Ok(Json(HealthCheckResponse {
@@ -375,9 +376,7 @@ impl McpServer {
 impl rmcp::ServerHandler for McpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
-            instructions: Some(
-                "GWU Pegasus MCP server. Before running other tools: (1) establish the ControlMaster via `gwu-hpc-mcp up --cluster pegasus --user <netid>` (or `ghm up …`). (2) Call `hpc_describe` and read the policy/resource bundle (GPU etiquette, Apptainer tips, scratch guidance, troubleshooting checklist).".into(),
-            ),
+            instructions: Some(include_str!("../docs/agent-connection.md").into()),
             capabilities: ServerCapabilities::builder()
                 .enable_tools()
                 .enable_prompts()
@@ -655,9 +654,12 @@ async fn ensure_master(context: &SshContext, remote_user: &str) -> Result<(), rm
 
 fn needs_2fa_error(context: &SshContext, remote_user: &str) -> rmcp::ErrorData {
     let cluster_id = &context.cluster.id;
-    let message =
-        format!("ControlMaster is not active for cluster '{cluster_id}'. Run 2FA to establish it.");
-    let hint = format!("Run: gwu-hpc-mcp up --cluster {cluster_id} --user {remote_user}");
+    let message = format!(
+        "Cluster connection is unavailable for '{cluster_id}'. Tell the user to check GW VPN if off campus and reconnect in their own terminal. Never guess or submit 2FA codes."
+    );
+    let hint = format!(
+        "Ask the user to run: ghm up --cluster {cluster_id} --user {remote_user}. They must complete authentication themselves; do not paste codes into chat."
+    );
     let data = json!({
         "cluster": cluster_id,
         "hint": hint,

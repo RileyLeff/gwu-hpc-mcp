@@ -61,138 +61,98 @@ impl SessionManager {
     {
         validate_name(name).map_err(|e| SessionExecFailure::from_error(e, Duration::ZERO))?;
 
-        let mut pre_command = String::new();
-        if let Some(path) = cwd {
-            let escaped = escape_for_shell(path);
-            pre_command.push_str(&format!(
-                "if [ -d {p} ]; then cd {p}; else echo \"WARN: cwd {p} not found; using $HOME\" 1>&2; cd \"$HOME\"; fi; ",
-                p = escaped
+        // Serialize commands per pane; two send-keys calls must never interleave.
+        let lock_key = format!(
+            "{}@{}:{}:{}",
+            self.context.user, self.context.cluster.host, self.context.cluster.port, name
+        );
+        let lock = SESSION_LOCKS.lock().entry(lock_key).or_default().clone();
+        let _guard = lock.lock().await;
+        let start = Instant::now();
+        let limit = timeout.unwrap_or(Duration::from_secs(300));
+        if limit.is_zero() {
+            return Err(SessionExecFailure::from_error(
+                AppError::InvalidInput("timeout_s must be greater than zero".into()),
+                Duration::ZERO,
             ));
+        }
+        crate::util::validate_env(env)
+            .map_err(|e| SessionExecFailure::from_error(e, Duration::ZERO))?;
+        // Private files hold the exact output independently of terminal width/history.
+        let dir = format!("/tmp/gwu-hpc-mcp-{}", Uuid::new_v4());
+        let setup = format!(
+            "command -v timeout >/dev/null && (umask 077; mkdir {})",
+            escape_for_shell(&dir)
+        );
+        remote(&self.context, setup)
+            .await
+            .map_err(|e| SessionExecFailure::from_error(e, start.elapsed()))?;
+        let mut statements = Vec::new();
+        if let Some(path) = cwd {
+            statements.push(format!("cd {}", escape_for_shell(path)));
         }
         for (key, value) in env {
-            pre_command.push_str(&format!(
-                "export {}={} && ",
-                escape_for_shell(key),
-                escape_for_shell(value)
-            ));
+            statements.push(format!("export {}={}", key, escape_for_shell(value)));
         }
-        let sentinel_id = Uuid::new_v4().to_string();
-        let sentinel_marker = format!("MCP_DONE:{sentinel_id}:");
-        let sentinel_line_prefix = format!("\n{sentinel_marker}");
-        let combined_command = format!(
-            "{pre_command}{command}; printf '\\n{marker}%s\\n' $?",
-            marker = sentinel_marker
+        // Run in a child Bash so exit/clear and shell state cannot destroy tracking.
+        statements.push(format!("eval {}", escape_for_shell(command)));
+        let script = statements.join(" && ");
+        let wrapper = format!(
+            "timeout --signal=TERM --kill-after=2s {}s bash -lc {} >{dir}/output 2>&1; printf '%s\\n' $? >{dir}/status.tmp; mv {dir}/status.tmp {dir}/status",
+            limit.as_secs(),
+            escape_for_shell(&script)
         );
-        let target = format!("{name}:0.0");
-
-        let args = vec![
-            "send-keys".to_string(),
-            "-t".to_string(),
+        let combined = format!("bash -c {}", escape_for_shell(&wrapper));
+        let target = format!("={name}:0.0");
+        let send = vec![
+            "send-keys".into(),
+            "-t".into(),
             target.clone(),
-            combined_command.clone(),
-            "C-m".to_string(),
+            "-l".into(),
+            combined,
         ];
-
-        if let Err(err) = run_tmux(&self.context, &args, Some(Duration::from_secs(10))).await {
-            return Err(SessionExecFailure::from_error(err, Duration::ZERO));
-        }
-
-        let start = Instant::now();
-        let mut last_buffer = String::new();
-        let mut final_buffer = String::new();
+        let execute = async {
+            run_tmux(&self.context, &send, Some(Duration::from_secs(10))).await?;
+            run_tmux(&self.context, &["send-keys".into(), "-t".into(), target,
+                "Enter".into()], Some(Duration::from_secs(10))).await?;
+            loop {
+                let poll = format!("if test -f {dir}/status; then cat {dir}/status {dir}/output; else printf 'RUNNING\\n'; fi");
+                let result = remote(&self.context, poll).await?;
+                let output = result.streams.get("stdout").cloned().unwrap_or_default();
+                if let Some((code, data)) = parse_result(&output)? {
+                    return Ok::<_, AppError>((code, data));
+                }
+                if start.elapsed() > limit + Duration::from_secs(20) {
+                    return Err(AppError::Tmux(format!(
+                        "No completion status received; inspect session {name} and {dir}")));
+                }
+                sleep(Duration::from_millis(400)).await;
+            }
+        }.await;
+        // If SSH fails, keep files for diagnosis rather than deleting a running job's output.
+        let (exit_code, bytes) =
+            execute.map_err(|e| SessionExecFailure::from_error(e, start.elapsed()))?;
+        let _ = remote(
+            &self.context,
+            format!("rm -f {dir}/output {dir}/status; rmdir {dir}"),
+        )
+        .await;
+        let output = String::from_utf8_lossy(&bytes).into_owned();
         let mut tail = TailBuffer::new(4096);
-        #[allow(unused_assignments)]
-        let mut exit_code: Option<i32> = None;
-
-        loop {
-            if let Some(limit) = timeout
-                && start.elapsed() > limit
-            {
-                let mut tail_buf = TailBuffer::new(4096);
-                tail_buf.push(final_buffer.as_bytes());
-                return Err(SessionExecFailure {
-                    error: AppError::SshTimeout(limit),
-                    duration: start.elapsed(),
-                    output: final_buffer.clone(),
-                    tail: tail_buf.to_lossy_string(),
-                });
-            }
-
-            let capture = match capture_pane(&self.context, name).await {
-                Ok(data) => data,
-                Err(err) => {
-                    return Err(SessionExecFailure::from_error(err, start.elapsed()));
-                }
-            };
-
-            if capture.len() > last_buffer.len() {
-                let new_chunk = &capture[last_buffer.len()..];
-                let clean_chunk = if let Some(pos) = new_chunk.find(&sentinel_line_prefix) {
-                    &new_chunk[..pos]
-                } else {
-                    new_chunk
-                };
-                if !clean_chunk.is_empty() {
-                    tail.push(clean_chunk.as_bytes());
-                    final_buffer.push_str(clean_chunk);
-                    if let Err(err) = on_chunk(clean_chunk) {
-                        return Err(SessionExecFailure::from_error(err, start.elapsed()));
-                    }
-                }
-            }
-
-            let search_start = last_buffer.len().saturating_sub(sentinel_line_prefix.len());
-            let search_slice = &capture[search_start..];
-            if let Some(rel_pos) = search_slice.rfind(&sentinel_line_prefix) {
-                let pos = search_start + rel_pos + sentinel_line_prefix.len();
-                let line_tail = &capture[pos..];
-                let line_end = line_tail.find('\n').unwrap_or(line_tail.len());
-                let code_str = line_tail[..line_end].trim();
-                match code_str.parse::<i32>() {
-                    Ok(code) => {
-                        exit_code = Some(code);
-                        break;
-                    }
-                    Err(_) => {
-                        let mut tail_buf = TailBuffer::new(4096);
-                        tail_buf.push(final_buffer.as_bytes());
-                        return Err(SessionExecFailure {
-                            error: AppError::Tmux(format!(
-                                "Failed to parse tmux exit code from '{code_str}'"
-                            )),
-                            duration: start.elapsed(),
-                            output: final_buffer.clone(),
-                            tail: tail_buf.to_lossy_string(),
-                        });
-                    }
-                }
-            }
-
-            last_buffer = capture;
-            sleep(Duration::from_millis(400)).await;
+        tail.push(&bytes);
+        on_chunk(&output).map_err(|e| SessionExecFailure::from_error(e, start.elapsed()))?;
+        if exit_code == 124 || exit_code == 137 {
+            return Err(SessionExecFailure {
+                error: AppError::SshTimeout(limit),
+                duration: start.elapsed(),
+                output,
+                tail: tail.to_lossy_string(),
+            });
         }
-
-        let duration = start.elapsed();
-        let exit_code = match exit_code {
-            Some(code) => code,
-            None => {
-                return Err(SessionExecFailure {
-                    error: AppError::Tmux(
-                        "Session terminated before sentinel was received".to_string(),
-                    ),
-                    duration,
-                    output: final_buffer.clone(),
-                    tail: final_buffer.clone(),
-                });
-            }
-        };
-        tail = TailBuffer::new(4096);
-        tail.push(final_buffer.as_bytes());
-
         Ok(SessionExecResult {
             exit_code,
-            duration,
-            output: final_buffer.clone(),
+            duration: start.elapsed(),
+            output,
             tail: tail.to_lossy_string(),
         })
     }
@@ -271,21 +231,57 @@ async fn run_tmux(
     }
 }
 
-async fn capture_pane(context: &SshContext, session: &str) -> AppResult<String> {
-    let args = vec![
-        "capture-pane".to_string(),
-        "-p".to_string(),
-        "-J".to_string(),
-        "-t".to_string(),
-        session.to_string(),
-    ];
-    let result = run_tmux(context, &args, Some(Duration::from_secs(10))).await?;
-    let output = result
-        .streams
-        .get("stdout")
-        .map(|buf| String::from_utf8_lossy(buf).into_owned())
-        .unwrap_or_default();
-    Ok(output)
+// One command at a time per session in this server process.
+static SESSION_LOCKS: once_cell::sync::Lazy<
+    parking_lot::Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
+> = once_cell::sync::Lazy::new(|| parking_lot::Mutex::new(HashMap::new()));
+
+async fn remote(context: &SshContext, command: String) -> AppResult<ExecResult> {
+    let req = ExecRequest {
+        command,
+        cwd: None,
+        env: HashMap::new(),
+        pty: false,
+        login_shell: false,
+        timeout: Some(Duration::from_secs(10)),
+    };
+    match ssh::exec(context, req, |_, _| {}).await {
+        Ok(result) if result.exit_code == 0 => Ok(result),
+        Ok(result) => Err(AppError::Tmux(format!(
+            "Remote helper failed: {}",
+            result.tail
+        ))),
+        Err(failure) => Err(map_exec_failure("session helper", failure)),
+    }
+}
+
+fn parse_result(bytes: &[u8]) -> AppResult<Option<(i32, Vec<u8>)>> {
+    let Some(end) = bytes.iter().position(|b| *b == b'\n') else {
+        return Err(AppError::Tmux("Incomplete session status".into()));
+    };
+    if &bytes[..end] == b"RUNNING" {
+        return Ok(None);
+    }
+    let code = std::str::from_utf8(&bytes[..end])
+        .ok()
+        .and_then(|s| s.parse::<i32>().ok())
+        .ok_or_else(|| AppError::Tmux("Invalid session status".into()))?;
+    Ok(Some((code, bytes[end + 1..].to_vec())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_result;
+    #[test]
+    fn output_is_independent_of_scrolling_unicode_and_terminal_codes() {
+        let output = format!("{}\n\\x1b[2J中文🦀\n", "line\n".repeat(10000));
+        let wire = format!("7\n{output}");
+        let (code, bytes) = parse_result(wire.as_bytes()).unwrap().unwrap();
+        assert_eq!(code, 7);
+        assert_eq!(bytes, output.as_bytes());
+        assert!(parse_result(b"RUNNING\n").unwrap().is_none());
+        assert!(parse_result(b"bad\n").is_err());
+    }
 }
 
 fn build_tmux_command(binary: &str, args: &[String]) -> String {

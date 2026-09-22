@@ -70,7 +70,7 @@ struct ConfigInitArgs {
     /// Output path for the generated config (default: ~/.gwu-hpc-mcp/config.toml)
     #[arg(long)]
     output: Option<PathBuf>,
-    /// Scratch working directory (e.g. /scratch/groups/<group>/<user>)
+    /// Scratch working directory (e.g. /scratch/<group>/<user>)
     #[arg(long)]
     default_cwd: String,
     /// Scratch root path (default: /scratch)
@@ -125,6 +125,7 @@ fn init_tracing() {
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "gwu_hpc_mcp=info".into()),
         )
+        .with_writer(std::io::stderr)
         .with_target(false)
         .try_init();
 }
@@ -261,10 +262,7 @@ async fn cmd_doctor(
         Ok(path) => println!("Found ssh at {}", path.display()),
         Err(_) => println!("WARNING: ssh binary not found in PATH"),
     }
-    match which(&context.cluster.ssh.tmux_binary) {
-        Ok(path) => println!("Found tmux at {}", path.display()),
-        Err(_) => println!("WARNING: tmux binary not found in PATH"),
-    }
+    println!("tmux and GNU timeout must be available on the remote cluster (not locally).");
     let control_path = context.control_path()?;
     println!("ControlPath: {}", control_path.display());
     match ssh::check_master(&context).await {
@@ -362,305 +360,45 @@ fn build_default_config(
     default_cwd: &str,
     scratch_root: &str,
 ) -> String {
-    format!(
-        r#"version = 1
+    let mut config: crate::config::Config =
+        toml::from_str(include_str!("../example/pegasus.config.toml"))
+            .expect("bundled config must parse");
+    config.defaults.default_cluster = Some(cluster_id.into());
+    config.defaults.default_cwd = Some(default_cwd.into());
+    let cluster = &mut config.clusters[0];
+    cluster.id = cluster_id.into();
+    cluster.display_name = Some(display_name.into());
+    cluster.host = host.into();
+    cluster.filesystems.lustre_root = Some(scratch_root.into());
+    cluster.filesystems.groups_root = Some(scratch_root.into());
+    toml::to_string_pretty(&config).expect("config must serialize")
+}
 
-[defaults]
-pty = true
-login_shell = true
-max_concurrent_execs = 4
-warn_on_login_compute = true
-default_cluster = "{cluster_id}"
-default_cwd = "{default_cwd}"
-
-[heuristics]
-denylist = ["rm -rf /", "mkfs", "shutdown", "reboot"]
-compute_markers = [
-  "CUDA_VISIBLE_DEVICES",
-  "(?i)python.(torch|tensorflow|jax)",
-  "\bmpirun\b",
-  "\bsrun\b"
-]
-
-[[clusters]]
-id = "{cluster_id}"
-display_name = "{display_name}"
-host = "{host}"
-port = 22
-
-[clusters.ssh]
-control_path = "~/.gwu-hpc-mcp/cm-%r@%h_%p"
-server_alive_interval = 60
-server_alive_count_max = 3
-ssh_binary = "ssh"
-tmux_binary = "tmux"
-
-[clusters.access]
-login_nodes = [
-  "log001.pegasus.arc.gwu.edu",
-  "log002.pegasus.arc.gwu.edu",
-  "log003.pegasus.arc.gwu.edu",
-  "log004.pegasus.arc.gwu.edu"
-]
-require_vpn = true
-prohibit_login_compute = true
-
-[clusters.filesystems]
-lustre_root = "{scratch_root}"
-groups_root = "{scratch_root}"
-home_is_nfs = true
-groups_is_nfs = true
-scratch_recommended = true
-scratch_purge_policy_url = "https://hpc.gwu.edu/scratch-storage"
-
-[clusters.slurm]
-require_partition = true
-require_time_limit = true
-max_wall_time = "14-00:00:00"
-default_partition = "defq"
-default_time_limit = "01:00:00"
-
-[[clusters.slurm.partitions]]
-name = "defq"
-kind = "cpu"
-cpu_model = "Dual Intel Xeon Gold 6148"
-cpu_cores = 40
-cpu_clock_ghz = 3.70
-ram_gb = 96
-interconnect = "Mellanox EDR Infiniband 100Gb"
-node_local_storage = "800 GB SSD (boot + node-local scratch)"
-notes = "General-purpose queue on 96 GB compute nodes."
-
-[[clusters.slurm.partitions]]
-name = "short"
-kind = "cpu"
-cpu_model = "Dual Intel Xeon Gold 6148"
-cpu_cores = 40
-cpu_clock_ghz = 3.70
-ram_gb = 96
-interconnect = "Mellanox EDR Infiniband 100Gb"
-node_local_storage = "800 GB SSD (boot + node-local scratch)"
-notes = "Same hardware as defq with 1-day time limit."
-
-[[clusters.slurm.partitions]]
-name = "tiny"
-kind = "cpu"
-cpu_model = "Dual Intel Xeon Gold 6148"
-cpu_cores = 40
-cpu_clock_ghz = 3.70
-ram_gb = 96
-interconnect = "Mellanox EDR Infiniband 100Gb"
-node_local_storage = "800 GB SSD (boot + node-local scratch)"
-notes = "Short jobs on standard compute nodes."
-
-[[clusters.slurm.partitions]]
-name = "nano"
-kind = "cpu"
-cpu_model = "Dual Intel Xeon Gold 6148"
-cpu_cores = 40
-cpu_clock_ghz = 3.70
-ram_gb = 96
-interconnect = "Mellanox EDR Infiniband 100Gb"
-node_local_storage = "800 GB SSD (boot + node-local scratch)"
-notes = "Burst jobs on standard compute nodes."
-
-[[clusters.slurm.partitions]]
-name = "highThru"
-kind = "cpu"
-cpu_model = "Dual Intel Xeon Gold 5122"
-cpu_cores = 8
-cpu_clock_ghz = 3.70
-ram_gb = 384
-interconnect = "Mellanox EDR Infiniband 100Gb"
-node_local_storage = "800 GB SSD (boot + node-local scratch)"
-notes = "High clock, low core-count nodes; good for serial/high-throughput workloads."
-
-[[clusters.slurm.partitions]]
-name = "highMem"
-kind = "cpu"
-cpu_model = "Dual Intel Xeon Gold 6140M"
-cpu_cores = 36
-cpu_clock_ghz = 3.70
-ram_gb = 3072
-interconnect = "Mellanox EDR Infiniband 100Gb"
-node_local_storage = "800 GB SSD (boot + node-local scratch)"
-notes = "Large-memory nodes (3 TB RAM)."
-
-[[clusters.slurm.partitions]]
-name = "highCore"
-kind = "cpu"
-notes = "High core-count CPU nodes (7-day limit) — confirm hardware details."
-
-[[clusters.slurm.partitions]]
-name = "384gb"
-kind = "cpu"
-cpu_model = "Dual Intel Xeon Gold 6148"
-cpu_cores = 40
-cpu_clock_ghz = 3.70
-ram_gb = 384
-interconnect = "Mellanox EDR Infiniband 100Gb"
-node_local_storage = "800 GB SSD (boot + node-local scratch)"
-notes = "384 GB memory CPU nodes."
-
-[[clusters.slurm.partitions]]
-name = "short-384gb"
-kind = "cpu"
-cpu_model = "Dual Intel Xeon Gold 6148"
-cpu_cores = 40
-cpu_clock_ghz = 3.70
-ram_gb = 384
-interconnect = "Mellanox EDR Infiniband 100Gb"
-node_local_storage = "800 GB SSD (boot + node-local scratch)"
-notes = "384 GB memory nodes with 1-day limit."
-
-[[clusters.slurm.partitions]]
-name = "debug"
-kind = "cpu"
-cpu_model = "Dual Intel Xeon Gold 6148"
-cpu_cores = 40
-cpu_clock_ghz = 3.70
-ram_gb = 96
-interconnect = "Mellanox EDR Infiniband 100Gb"
-node_local_storage = "800 GB SSD (boot + node-local scratch)"
-notes = "Generic debug queue (4 hours)."
-
-[[clusters.slurm.partitions]]
-name = "debug-cpu"
-kind = "cpu"
-cpu_model = "Dual Intel Xeon Gold 6148"
-cpu_cores = 40
-cpu_clock_ghz = 3.70
-ram_gb = 96
-interconnect = "Mellanox EDR Infiniband 100Gb"
-node_local_storage = "800 GB SSD (boot + node-local scratch)"
-notes = "CPU-only debug queue."
-
-[[clusters.slurm.partitions]]
-name = "small-gpu"
-kind = "gpu"
-gpu_model = "NVIDIA Tesla V100"
-gpu_count = 2
-ram_gb = 192
-cpu_model = "Dual Intel Xeon Gold 6148"
-cpu_cores = 40
-cpu_clock_ghz = 3.70
-interconnect = "Mellanox EDR Infiniband 100Gb"
-node_local_storage = "800 GB SSD (boot + node-local scratch)"
-notes = "Two V100 GPUs per node; omit --gres on queues backed by this hardware (full node allocation)."
-
-[[clusters.slurm.partitions]]
-name = "large-gpu"
-kind = "gpu"
-gpu_model = "NVIDIA Tesla V100 SXM2"
-gpu_count = 4
-gpu_memory_gb = 16
-gpu_total_memory_gb = 64
-ram_gb = 384
-cpu_model = "Dual Intel Xeon Gold 6140"
-cpu_cores = 36
-cpu_clock_ghz = 3.70
-interconnect = "Mellanox EDR Infiniband 100Gb (NVLink between GPUs)"
-node_local_storage = "800 GB SSD (boot + node-local scratch)"
-notes = "Four V100 SXM2 GPUs with NVLink."
-
-[[clusters.slurm.partitions]]
-name = "med-gpu"
-kind = "gpu"
-notes = "Medium GPU nodes; 7-day limit — confirm exact hardware (likely newer accelerators)."
-
-[[clusters.slurm.partitions]]
-name = "debug-gpu"
-kind = "gpu"
-gpu_model = "NVIDIA Tesla V100"
-gpu_count = 2
-ram_gb = 192
-cpu_model = "Dual Intel Xeon Gold 6148"
-cpu_cores = 40
-cpu_clock_ghz = 3.70
-interconnect = "Mellanox EDR Infiniband 100Gb"
-node_local_storage = "800 GB SSD (boot + node-local scratch)"
-notes = "GPU debug queue (full node allocation; omit --gres)."
-
-[[clusters.slurm.partitions]]
-name = "ultra-gpu"
-kind = "gpu"
-gpu_model = "NVIDIA A100"
-gpu_count = 8
-gpu_memory_gb = 80
-gpu_total_memory_gb = 640
-ram_gb = 512
-cpu_model = "Dual Intel Xeon Gold 5320"
-cpu_cores = 52
-cpu_clock_ghz = 2.20
-interconnect = "Mellanox EDR Infiniband 100Gb"
-node_local_storage = "800 GB SSD (boot + node-local scratch)"
-notes = "Eight A100 80GB GPUs per node."
-
-[[clusters.slurm.partitions]]
-name = "superChip"
-kind = "gpu"
-gpu_model = "NVIDIA GH200 Grace Hopper Superchip"
-gpu_count = 1
-gpu_memory_gb = 96
-ram_gb = 480
-cpu_model = "NVIDIA Grace CPU"
-cpu_cores = 72
-interconnect = "NVLink-C2C"
-node_local_storage = "7.68 TB SSD"
-notes = "Grace Hopper Superchip nodes — confirm final production specs with HPC staff."
-
-[[clusters.slurm.partitions]]
-name = "viz"
-kind = "gpu"
-notes = "Visualization GPU node — confirm hardware."
-
-[clusters.prompts]
-slurm_safety_template = """
-Always submit compute with Slurm using -p <partition> and -t <time>. cd to {{{{groups_root}}}}/<your_group>/<your_user> (scratch) before heavy work. Do not run compute on login nodes.
-
-Keep login-shell execution enabled (the default) so environment modules work. When exploring modules, prefer patterns like:
-  module avail | grep <name>
-  module spider <name>
-  module keyword <term>
-and pipe long listings through head/less to stay readable.
-"""
-
-[clusters.policy]
-template = """
-Pegasus ({{{{host}}}}) login nodes are for submission, data movement, compilation, and prep. Running jobs on login nodes is prohibited.
-Compute must be submitted via Slurm with both -p and -t; maximum wall time is 14 days.
-Use scratch for active workloads: {{{{groups_root}}}}. Home and groups (NFS) are not for running jobs. Scratch is purgeable; move long-term data elsewhere.
-Inspect with sinfo; monitor with squeue; review with sacct. VPN/on-campus access and 2FA are required.
-
-Environment modules load correctly when commands run inside a login shell; leave login_shell=true unless you have a specific reason not to. To discover modules without drowning in output, use:
-  module spider <name>        # shows availability and requirements
-  module keyword <term>       # fuzzy search descriptions
-  module avail | grep <term>  # filter long listings (pipe to head/less as needed)
-
-Scratch directories can vary by group. If `cd {{{{groups_root}}}}/<group>/<user>` fails, run `ls {{{{groups_root}}}}/<group>` to confirm the exact subdirectory.
-
-Partition notes:
-  - `debug-gpu` and other GPU nodes grant the full node with its GPU; omit `--gres` flags.
-  - GPU queues generally have 7-day limits; `debug-*` partitions are capped at 4 hours.
-
-GPU submission etiquette on Pegasus:
-  - GPUs are node-local; the scheduler does not honor `--gres`/`--gpus` on these partitions and will reject the request. Just choose the GPU partition and set `-N`, `-n`, and `-t`.
-  - To ensure isolation, request a full node (`-N1 -n1 --exclusive`) instead of GRES.
-  - Avoid `--gres`/`--gpus` entirely; if you see `Invalid generic resource (gres)` or `Requested GRES option unsupported`, drop those flags.
-
-Apptainer tips:
-  - `module load squashfs/4.4` provides `mksquashfs`, required for Docker-based `apptainer exec`.
-  - Set `APPTAINER_CACHEDIR` to a scratch location for faster rebuilds.
-  - Bind scratch explicitly when running from other locations: `apptainer exec --bind {{{{groups_root}}}}:{{{{groups_root}}}} --nv ...`.
-  - Install helper tools (e.g., `uv`) once on the host and reuse them instead of relying on minimal container images.
-
-Troubleshooting checklist:
-  - `scontrol show job <id>` to inspect ExitCode and node allocation.
-  - `module avail` / `module spider` to locate missing binaries.
-  - `Invalid generic resource (gres)` usually means the queue manages GPUs automatically; remove manual `--gres` flags.
-  - `tmux`/`ssh` issues? Ensure the ControlMaster is running via `ghm status` or `gwu-hpc-mcp status`.
-  - If `ghm status` shows that the ControlMaster is not running, you need to instruct the user to run `ghm up`, as it has a 2FA step that only the user can complete.
-"""
-"#
-    )
+#[cfg(test)]
+mod generation_tests {
+    #[test]
+    fn generated_config_escapes_values_and_preserves_regexes() {
+        let path = "/scratch/group/user \"quoted\"";
+        let text = super::build_default_config("test", "Test", "host", path, "/scratch");
+        let config: crate::config::Config = toml::from_str(&text).unwrap();
+        assert_eq!(config.defaults.default_cwd.as_deref(), Some(path));
+        for command in ["srun hostname", "mpirun app"] {
+            assert!(
+                config
+                    .heuristics
+                    .compute_markers
+                    .iter()
+                    .any(|p| regex::Regex::new(p).unwrap().is_match(command))
+            );
+        }
+        assert_eq!(
+            config.clusters[0]
+                .slurm
+                .as_ref()
+                .unwrap()
+                .default_partition
+                .as_deref(),
+            Some("cpu")
+        );
+    }
 }

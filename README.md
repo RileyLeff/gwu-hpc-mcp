@@ -1,173 +1,299 @@
 # gwu-hpc-mcp
 
-This is Riley's prototype tool for allowing LLM agents, such as OpenAI's [Codex CLI](https://developers.openai.com/codex/cli/) or Anthropic's [Claude Code](https://www.claude.com/product/claude-code), to interact with the High-Performance Computing resources at George Washington University.
+Let your AI assistant use GWU Pegasus through your own authenticated cluster
+connection. You complete 2FA in your terminal; the agent never needs your password
+or verification code. `ghm` is the short name for `gwu-hpc-mcp`.
 
-## Why this exists
+## Before you start
 
-The LLM can dink around the terminal much, much faster than I can and we make mistakes at about the same rate.
+- You need a GW Pegasus account and your GW NetID (which may differ from your
+  computer username).
+- **Off campus, connect to [GW VPN](https://it.gwu.edu/vpn-global-protect) first
+  and keep it connected. Losing VPN interrupts cluster access and can drop the
+  SSH connection.** Reconnect VPN and reauthenticate if necessary.
+- You need an MCP-capable agent/client that can launch a local stdio server.
+- macOS and Linux are supported. On Windows, use WSL; native Windows OpenSSH is
+  not the supported connection-sharing route for this tool.
+- The cluster needs Bash, tmux, and GNU `timeout`. These were available in the
+  live Pegasus smoke tests. They do not need to be installed locally.
 
-## How It Works
+## Install on your computer
 
-### For You, The End User
+The current distribution is source-based. The GitHub repository is private at
+this writing: request repository access from the maintainer or obtain a source
+archive containing these updated files. A private repository requires GitHub
+authentication to clone. There are no packaged installers or prebuilt release
+binaries provided by these instructions.
 
-#### Initial Setup
+### macOS
 
-Note that this server only works on unix or unix-like systems: Linux, MacOS, or WSL on Windows. This will not work in a native windows environment like Powershell.
+In Terminal, install Apple's command-line build tools if not already installed:
 
-1. Install the server in any one of the following ways: 
-
-via cargo (available once I make this repo public): 
-## Install Options
-
-### Using Cargo (recommended)
-```bash
-cargo install --path .
-# or once the repo is public:
-# cargo install --git https://github.com/<org>/gwu-hpc-mcp
+```sh
+xcode-select --install
 ```
 
-### Build from source
-```bash
-cargo build --release
-cp target/release/gwu-hpc-mcp /usr/local/bin/
+Finish the installer, then install current stable Rust using the
+[official Rust installer](https://rust-lang.org/tools/install/):
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+. "$HOME/.cargo/env"
 ```
 
-### Prebuilt binaries
-Download the latest release artifact and place it on your `$PATH` (to be provided once CI publishes archives).
+OpenSSH ships with macOS. Continue to **Build and install** below.
 
-### Initialize the config
-```bash
-# scaffold with defaults and your scratch path
-gwu-hpc-mcp config init --default-cwd /scratch/groups/<group>/<user>
-# override output location or overwrite an existing file if needed
-gwu-hpc-mcp config init --default-cwd /scratch/groups/<group>/<user> --output ~/.gwu-hpc-mcp/config.toml --force
+### Linux
+
+On Ubuntu/Debian, install the build tools and SSH client:
+
+```sh
+sudo apt update
+sudo apt install build-essential curl git openssh-client
 ```
 
-Alternatively, copy the example:
-```bash
-mkdir -p ~/.gwu-hpc-mcp
-cp examples/pegasus.config.toml ~/.gwu-hpc-mcp/config.toml
-# then edit ~/.gwu-hpc-mcp/config.toml manually
+On Fedora use `sudo dnf install gcc make curl git openssh-clients`; on other
+Linux distributions install the equivalent packages. Install current stable
+Rust using the two Rust installer commands above. Then continue below.
+
+### Windows (WSL)
+
+In an administrator PowerShell window, follow
+[Microsoft's WSL installation guide](https://learn.microsoft.com/en-us/windows/wsl/install):
+
+```powershell
+wsl --install -d Ubuntu
 ```
 
-## FAQ
+Restart if prompted, open Ubuntu, and finish creating your Linux user. Run the
+Linux instructions above **inside Ubuntu**. Keep the repository, config, SSH
+socket, and `ghm up` in the same WSL distribution and Linux user account. Native
+Windows and WSL home directories and SSH sockets are not interchangeable.
 
-- *What is MCP?*
-  - [**M**odel **C**ontext **P**rotocol](https://modelcontextprotocol.io/docs/getting-started/intro) is a standard for exposing external tools to language models -- a MCP server's job is to accept tokens (words, text, etc) from a language model and convert them into actions or tool use. You can find many MCP servers for many different applications [here](https://www.claude.com/product/claude-code).
-- *Why not just use an off-the-shelf SSH MCP tool?*
-  - GWU's HPC has a 2FA step that was very awkward to handle with the SSH MCP tools I tried. This is a simple attempt at a more suitable tool for this particular job.
-- *Can I use this with Github Copilot, Qwen Code, Opencode, Gemini CLI, Amp, Roo, or whatever other agent I'm using?*
-  - Yes, as long as your agent supports MCP, which is fairly standard across agent implementations at this point.
-- *Why is this written in rust? Most MCP servers I see elsewhere are written in typescript or python.*
-  - I got very frustrated with managing the statefulness of the ssh connection + a runtime. Using the [MCP Rust SDK](https://github.com/modelcontextprotocol/rust-sdk) was a much more pleasant experience.
+Connect GW VPN on Windows and verify that Pegasus is reachable from WSL. If
+Windows can reach it but WSL cannot, resolve the WSL/VPN networking issue before
+troubleshooting MCP. Do not disable VPN or authentication to work around it.
 
+### Build and install
 
+Once you have access to the repository:
 
-## Overview
-- Exposes the George Washington University (GWU) Pegasus HPC cluster to MCP-compatible hosts (e.g., Codex CLI) over stdio.
-- Provides high-fidelity remote shell execution and tmux-backed persistent sessions via a user-managed OpenSSH ControlMaster.
-- Streams stdout/stderr in near real time and surfaces cluster policy and filesystem guidance as MCP resources/prompts.
-- Loads live cluster metadata from a TOML configuration file; changes are picked up at runtime via a filesystem watcher.
-
-## Components
-- `src/main.rs`: CLI entrypoint with subcommands for establishing/tearing down the ControlMaster, status checks, tests, diagnostics, and the default `serve-stdio`.
-- `src/mcp.rs`: MCP server wiring using the `rmcp` SDK. Implements tools (`shell_exec`, `session_open/exec/close`, `hpc_describe`, `health_check`) plus resources and prompts.
-- `src/ssh.rs`: ControlMaster state management, remote execution with timeouts/cancellation, stream handling, and tmux command support.
-- `src/sessions.rs`: High-level tmux management (sentinel-based command execution, streaming output).
-- `src/config.rs`: Configuration schema, loader, hot-reload-aware manager, and regex compilation.
-- `src/policy.rs`: Renders policy/filesystem/partition resources and prompts from templates.
-- `src/util.rs`: Shared helpers (tail buffer, path expansion, shell escaping).
-- `plan/`: Original planning documents kept for reference.
-
-## Getting Started
-### Prerequisites
-- Rust 1.75+ (the project targets edition 2024).
-- OpenSSH and tmux installed locally.
-- Access to GWU Pegasus with valid credentials and the ability to complete the 2FA challenge.
-
-### Build & Test
-```bash
-cargo fmt
-cargo test
+```sh
+git clone https://github.com/RileyLeff/gwu-hpc-mcp.git
+cd gwu-hpc-mcp
+cargo install --path . --locked
+ghm --version
 ```
-The test suite currently includes focused unit tests for configuration parsing, template rendering, tail buffer behavior, and URI parsing.
 
-### Configuration
-1. Copy the Pegasus example from `plan/01-config-and-cluster-metadata.md` (or author your own) into `~/.gwu-hpc-mcp/config.toml`.
-2. Adjust `defaults.default_cwd`, filesystem prompts, and policy text to match your group/project paths.
-3. Optional: set `GWU_HPC_MCP_CONFIG` to point to a non-default location.
+If you received a source archive, extract it and run `cargo install --path .
+--locked` from the folder containing `Cargo.toml` instead of cloning. Use a
+current stable Rust toolchain; the source requires Rust 1.88 or newer. If Rust
+is already installed, `rustup update stable` updates it.
 
-Key fields:
-- `[[clusters]]`: identifies the cluster (`id`, `display_name`, `host`, `port`).
-- `[clusters.ssh]`: ControlMaster `control_path`, `ssh_binary`, `tmux_binary`, keepalive settings.
-- `[clusters.filesystems]` & `[clusters.policy]`: variables used by resource/prompt templates.
-- `[defaults]`: controls login shell usage, PTY, concurrency, default cluster/cwd.
+Both `ghm` and `gwu-hpc-mcp` are installed in `~/.cargo/bin`. If your terminal
+cannot find them, run `. "$HOME/.cargo/env"` or reopen the terminal. A GUI agent
+may need the absolute executable path even when your terminal can find `ghm`.
 
-### Establishing the ControlMaster
+## First connection: from config to ghm up
+
+Replace `YOUR_NETID`, `YOUR_GROUP`, and `YOUR_USER` below. The scratch directory
+must actually exist and be writable by you; ask your lab/HPC administrator if
+you do not know it. Do not infer a filesystem directory from your group name.
+
+```sh
+ghm config init --default-cwd '/scratch/YOUR_GROUP/YOUR_USER'
+ghm up --user YOUR_NETID
+ghm status --user YOUR_NETID
+ghm test --user YOUR_NETID
 ```
-gwu-hpc-mcp up --cluster pegasus --user <netid>
-```
-- Runs `ssh -MNf ...` with the configured ControlPath. Interactive 2FA occurs here; the MCP server never prompts for credentials.
 
-### Running the MCP Server
-```
-gwu-hpc-mcp serve-stdio --config ~/.gwu-hpc-mcp/config.toml
-```
-- The process listens on stdio using the `rmcp` transport. Logs go to stderr (respecting `RUST_LOG`).
-- Configuration changes are reloaded automatically (notify watcher).
+Keep VPN connected off campus. `ghm up` prompts interactively for the required
+credentials/2FA. **Enter them only in your terminal, not in agent chat.** Check
+that `ghm status` says `running` and `ghm test` prints a cluster hostname and exits
+successfully. A first SSH connection may ask you to verify the host fingerprint;
+use GW's trusted guidance rather than disabling host-key checking.
 
-### CLI Utilities
-- `gwu-hpc-mcp status` — shows ControlMaster state and socket path.
-- `gwu-hpc-mcp test` — runs `hostname && pwd` via the ControlMaster and prints output.
-- `gwu-hpc-mcp down` — shuts down the ControlMaster and removes the socket.
-- `gwu-hpc-mcp doctor` — diagnostic checks (binaries, ControlPath, Master state).
+No edits to `~/.ssh/config` are required. You can optionally set
+`export GWU_HPC_MCP_USER=YOUR_NETID` in your shell startup file to omit `--user`.
+Still set the NetID explicitly in the agent configuration below, since GUI apps
+may not inherit shell variables.
 
-### Codex CLI Integration (example)
-Add to `~/.codex/config.toml`:
+The config is `~/.gwu-hpc-mcp/config.toml`. The initializer uses the same template
+as [example/pegasus.config.toml](example/pegasus.config.toml). For manual setup,
+copy that example and add your real `default_cwd` under `[defaults]`. This excerpt
+shows the key settings; it is not a replacement for the complete example:
+
 ```toml
-startup_timeout_sec = 30
+[defaults]
+default_cluster = "pegasus"
+default_cwd = "/scratch/YOUR_GROUP/YOUR_USER"
+login_shell = true
 
-[mcp_servers.gwu_hpc]
-command = "/absolute/path/to/gwu-hpc-mcp"
-args = ["serve-stdio", "--config", "/Users/you/.gwu-hpc-mcp/config.toml"]
-env = { GWU_HPC_MCP_USER = "your_netid" }
+# In the Pegasus cluster's SSH section:
+[clusters.ssh]
+control_path = "~/.gwu-hpc-mcp/cm-%r@%h_%p"
 ```
-When installed via Cargo, the crate also ships a short alias `ghm`, so you can swap `command = "ghm"` if you prefer the shorthand.
 
-Steps:
-1. Ensure `gwu-hpc-mcp` is on your `$PATH` and the ControlMaster is up.
-2. Restart Codex CLI; the server should appear under available MCP servers.
-3. Use standard MCP commands (`shell_exec`, `session_*`, `hpc_describe`, `health_check`) from the agent environment. It’s best practice to fetch `hpc://pegasus/policy` (or call `hpc_describe`) at the start of a session so the agent has the latest site tips before running heavy commands.
+Username precedence is `--user`, `GWU_HPC_MCP_USER`, then local `USER`. Config path
+precedence is `--config`, `GWU_HPC_MCP_CONFIG`, then the default above. Use the same
+NetID and config for the terminal connection and the MCP process. `config init
+--force` replaces an existing config; do not use it to casually upgrade a config
+that contains your settings.
 
-## Divergence from the Original Plan
-### 1. Slurm Validation Tool
-- **Original**: Provide an `hpc.validate_slurm` tool to parse Slurm commands, enforce partition/time requirements, and suggest fixes.
-- **Implemented**: Omitted `hpc.validate_slurm`. The server exposes policy guidance via prompts/resources only, relying on HPC enforcement (per user preference). No job-submission wrappers or command validation occur on the automation side.
+## Connect your agent
 
-### 2. Prompt/Resource Behavior
-- **Original**: Intended both prompts/resources for Slurm policy plus optional machine-friendly partitions resource.
-- **Implemented**: Prompts/resources remain, but validation logic is absent. The resources are rendered plain-text; no additional machine JSON schema was introduced.
+For clients using the common JSON `mcpServers` format, merge this into the
+client's MCP configuration (do not replace unrelated server entries):
 
-### 3. Optional Features
-- Included optional features in the first pass as requested:
-  - **Config Hot Reload** using `notify`.
-  - **`health.check` Tool** that reports ControlMaster status and socket path.
-  - Tail buffer warnings, denylist, and compute markers as described.
+```json
+{
+  "mcpServers": {
+    "gwu_hpc": {
+      "command": "/ABSOLUTE/PATH/TO/ghm",
+      "args": ["serve-stdio", "--user", "YOUR_NETID"],
+      "env": {
+        "GWU_HPC_MCP_CONFIG": "/ABSOLUTE/PATH/TO/.gwu-hpc-mcp/config.toml"
+      }
+    }
+  }
+}
+```
 
-### 4. MCP Toolkit
-- Maintained strict adherence to stdio-only transport and kept logs on stderr per plan.
-- No extra tools beyond the shell/tmux/describe/health surfaces; ensured streaming output via logging notifications.
+Use `command -v ghm` for the executable path and `echo "$HOME"` for your home
+path. Examples: `/Users/YOUR_MAC_USER/.cargo/bin/ghm` on macOS and
+`/home/YOUR_LINUX_USER/.cargo/bin/ghm` on Linux/WSL. Do not put literal `~` in a
+client's executable path or JSON path value. Your client may use another config
+format; preserve its required structure and use the same command/arguments.
 
-### 5. Testing Scope
-- Added focused unit tests (tail buffer, policy templating, config schema, URI parsing) rather than full fake-SSH integration harness (left for future iterations). Unit coverage ensures critical helpers behave, but no end-to-end fake ssh/tmux simulation yet.
+For a **Windows-native client launching the WSL installation**, use an explicit
+WSL distribution and Linux user. The NetID is a separate value:
 
-## Future Enhancements
-- Expand test coverage with a fake SSH/tmux harness to simulate ControlMaster behavior without external dependencies.
-- Add optional machine-readable resources (e.g., JSON partitions list) if agents benefit from structured data.
-- Integrate richer logging/telemetry or metrics depending on deployment needs.
+```json
+{
+  "mcpServers": {
+    "gwu_hpc": {
+      "command": "wsl.exe",
+      "args": [
+        "--distribution", "Ubuntu",
+        "--user", "YOUR_WSL_USER",
+        "--exec", "/home/YOUR_WSL_USER/.cargo/bin/ghm",
+        "serve-stdio",
+        "--config", "/home/YOUR_WSL_USER/.gwu-hpc-mcp/config.toml",
+        "--user", "YOUR_NETID"
+      ]
+    }
+  }
+}
+```
 
-## Module Search Tips (mirrors policy prompt)
-- Keep `login_shell` enabled unless you have a specific reason to run a raw command; it ensures the environment module system works.
-- Use `module avail | grep <term>` to trim long lists, or pipe to `head`/`less`.
-- `module spider <term>` reveals availability and prerequisites; `module keyword <term>` searches descriptions.
-- These hints are baked into the policy/prompt templates so agents see them automatically, but they’re helpful for humans working interactively too.
+Run `ghm up` in that same Ubuntu user account. For an agent already running
+inside WSL, use the ordinary Linux example instead. Windows-client WSL launch
+instructions have been documented but have not been exercised on a Windows host
+in this project's current validation.
+
+Reload/reconnect the MCP server in your client after configuring it. Ask your
+agent to call `health_check`, then `hpc_describe`, then run `hostname` through
+`shell_exec`. MCP startup alone does not prove that cluster access works.
+
+## What is ControlMaster? Is it different from MCP?
+
+They are two layers of the same workflow:
+
+```text
+You run ghm up -> SSH login + 2FA -> shared SSH connection to Pegasus
+Agent -> local ghm serve-stdio (MCP) -> reuses that SSH connection -> Pegasus
+```
+
+OpenSSH calls connection sharing **ControlMaster**. The **ControlPath** is a
+local socket through which other SSH commands reuse the authenticated connection.
+`ghm up` supplies these SSH options directly, using the socket path in the ghm
+config. See the [OpenSSH connection-sharing documentation](https://man.openbsd.org/ssh_config#ControlMaster).
+
+An existing `Host pegasus` alias may have its own ControlMaster/ControlPath. A
+working `ssh pegasus` session does not necessarily establish the socket that ghm
+expects. Use `ghm up` and `ghm status` for this tool; do not copy someone else's
+SSH config. The MCP is not a separate cluster login or an alternative to VPN/2FA.
+
+Several MCP clients can share one ghm connection. Give each task its own tmux
+session. `ghm down` affects every client sharing that connection, so coordinate
+before disconnecting or resetting it.
+
+## When the connection drops
+
+1. Restore GW VPN if off campus. Network changes, laptop sleep, VPN loss, and
+   SSH disconnection can interrupt access. A brief interruption may recover, but
+   do not assume it did.
+2. Run `ghm status --user YOUR_NETID`. A running local master is not a guarantee
+   of remote reachability; also run `ghm test --user YOUR_NETID`.
+3. If a new login is needed, run `ghm up --user YOUR_NETID` and complete 2FA in
+   your terminal. If an earlier `ghm up` is stuck in that terminal, cancel that
+   attempt with Ctrl-C before retrying.
+4. If a stale connection requires resetting, first coordinate with other clients;
+   then use `ghm down --user YOUR_NETID` followed by `ghm up --user YOUR_NETID`.
+   If reset fails, inspect `ghm doctor` rather than deleting arbitrary sockets or
+   killing all SSH processes.
+5. Recheck health and a harmless command. Before retrying a job submission that
+   lost its response, check `squeue`/`sacct` to avoid duplicate jobs. A lost SSH
+   connection does not imply that Slurm jobs were cancelled.
+
+[Agent connection instructions](docs/agent-connection.md) are embedded directly
+in the MCP initialization response, so agents receive the VPN, reconnection,
+no-code-guessing, and shared-session rules even if they never read this README.
+The policy returned by `hpc_describe` repeats the authentication guidance.
+
+## Tools and behavior
+
+- `hpc_describe`: configured policy, filesystem, and partition snapshot. Read it
+  before using the cluster; use `sinfo`/`scontrol` to verify current resources.
+- `health_check`: reports whether the local SSH ControlMaster is running.
+- `shell_exec`: executes a shell command, optionally with cwd, environment,
+  timeout, and PTY. `pty=false` keeps stdout and stderr separate. `ok` is true
+  only when `exit_code` is zero. A failed cwd stops execution.
+- `session_open`, `session_exec`, `session_close`: tmux-backed execution.
+  Each command runs in a fresh login Bash child in the session; shell variable
+  and cwd changes do not persist between calls. Pass `cwd` and `env` explicitly.
+  Output is buffered in private remote temporary files and returned on completion,
+  independent of pane scrolling, terminal clearing, or Unicode. A session command
+  defaults to a 300-second timeout; GNU `timeout` terminates its process group.
+  Exit codes 124/137 are reserved for reporting timeout. Successful collection
+  removes temporary files; connection failures may leave diagnostic files under
+  `/tmp/gwu-hpc-mcp-*`. Commands to the same session are serialized within one
+  server process; do not drive the same pane from multiple clients simultaneously.
+
+The shell denylist is a heuristic, not a sandbox. Slurm guidance is advisory;
+there is no job-submission wrapper enforcing resource or filesystem policy.
+Commands run with your account's privileges. A shell timeout stops the local SSH
+client; it does not cancel submitted Slurm jobs. Use `scancel` for those jobs.
+
+Logs go to stderr, leaving stdout exclusively for MCP JSON. Config edits are
+hot-reloaded when detected; concurrency changes require restarting the server.
+
+## Cluster metadata
+
+The bundled snapshot was checked against live Slurm on 2026-09-22. Current
+partitions are `cpu`, `gpu`, `nano`, `superChip`, `viz`, and `deus`. Limits vary by
+partition. GPU queues advertise GRES; inspect type/count and request what the job
+needs. Old `defq` and `debug-gpu` examples are obsolete. CPU/GPU partitions contain
+mixed hardware, so the config avoids claiming uniform specifications.
+
+`/scratch` currently resolves under GPFS. The existing config field `lustre_root`
+is retained as a compatibility name, not a claim about filesystem type. Confirm
+retention and account eligibility with HPC staff. Use your own scratch directory;
+never copy another user's local config unchanged.
+
+## Development and validation
+
+```sh
+cargo fmt --check
+cargo test --locked
+cargo build --locked
+python3 tests/mcp_smoke.py --binary target/debug/ghm
+```
+
+The smoke test uses the real MCP stdio protocol and requires an existing Pegasus
+ControlMaster plus your local config. It creates and removes a uniquely named
+tmux session, checks shell errors, Unicode/large output, invalid cwd, timeout,
+and session reuse. It does not submit Slurm jobs.
+
+`ghm doctor` checks local configuration and binaries. `ghm down` closes the SSH
+ControlMaster. Keep the connection open while using the tools.

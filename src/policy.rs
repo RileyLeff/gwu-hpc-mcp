@@ -35,7 +35,7 @@ fn render_policy(cluster: &Cluster, vars: &HashMap<&'static str, String>) -> Str
     let mut lines = Vec::new();
     lines.push(format!(
         "{} login nodes are for submission, data movement, and prep work. \
-        Run compute via Slurm from Lustre directories.",
+        Run compute via Slurm from scratch directories.",
         cluster.display_name()
     ));
     if let Some(max) = cluster
@@ -49,7 +49,7 @@ fn render_policy(cluster: &Cluster, vars: &HashMap<&'static str, String>) -> Str
     }
     if let Some(groups_root) = cluster.filesystems.groups_root.as_deref() {
         lines.push(format!(
-            "Use Lustre scratch (e.g., {groups_root}/<group>/<user>) for active workloads."
+            "Use Shared scratch (e.g., {groups_root}/<group>/<user>) for active workloads."
         ));
     }
     if cluster.filesystems.home_is_nfs {
@@ -152,7 +152,7 @@ fn render_filesystem(fs: &ClusterFilesystems) -> String {
     let mut lines = Vec::new();
     if let Some(lustre) = fs.lustre_root.as_deref() {
         lines.push(format!(
-            "Lustre scratch root: {lustre}. Use for job working directories."
+            "Shared scratch root: {lustre}. Use for job working directories."
         ));
     }
     if let Some(groups_root) = fs.groups_root.as_deref() {
@@ -162,13 +162,13 @@ fn render_filesystem(fs: &ClusterFilesystems) -> String {
         lines.push("Home directories are NFS; avoid running compute there.".to_string());
     }
     if fs.groups_is_nfs {
-        lines.push("Group directories are NFS; prefer Lustre for heavy workloads.".to_string());
+        lines.push("Group directories are NFS; prefer scratch for heavy workloads.".to_string());
     }
     if fs.scratch_recommended {
-        lines.push("Prefer Lustre scratch for performance.".to_string());
+        lines.push("Prefer shared scratch for performance.".to_string());
     }
     if let Some(url) = fs.scratch_purge_policy_url.as_deref() {
-        lines.push(format!("Lustre purge policy: {url}"));
+        lines.push(format!("Scratch purge policy: {url}"));
     }
     if lines.is_empty() {
         lines.push("Filesystem guidance not available in config.".to_string());

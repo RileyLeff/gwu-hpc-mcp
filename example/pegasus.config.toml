@@ -1,3 +1,5 @@
+# Cluster metadata checked with sinfo/scontrol on 2026-09-22.
+# Recheck live Slurm metadata before choosing hardware or submitting jobs.
 version = 1
 
 [defaults]
@@ -6,16 +8,11 @@ login_shell = true
 max_concurrent_execs = 4
 warn_on_login_compute = true
 default_cluster = "pegasus"
-default_cwd = "/scratch/<your_group>/<your_user>"
+# Set default_cwd to your actual /scratch/<group>/<user> directory.
 
 [heuristics]
 denylist = ["rm -rf /", "mkfs", "shutdown", "reboot"]
-compute_markers = [
-  "CUDA_VISIBLE_DEVICES",
-  "(?i)python.(torch|tensorflow|jax)",
-  "\\bmpirun\\b",
-  "\\bsrun\\b"
-]
+compute_markers = ['CUDA_VISIBLE_DEVICES', '(?i)python.(torch|tensorflow|jax)', '\bmpirun\b', '\bsrun\b']
 
 [[clusters]]
 id = "pegasus"
@@ -31,263 +28,73 @@ ssh_binary = "ssh"
 tmux_binary = "tmux"
 
 [clusters.access]
-login_nodes = [
-  "log001.pegasus.arc.gwu.edu",
-  "log002.pegasus.arc.gwu.edu",
-  "log003.pegasus.arc.gwu.edu",
-  "log004.pegasus.arc.gwu.edu"
-]
 require_vpn = true
 prohibit_login_compute = true
 
 [clusters.filesystems]
+# lustre_root is a legacy field name; Pegasus /scratch currently resolves to GPFS.
 lustre_root = "/scratch"
 groups_root = "/scratch"
-home_is_nfs = true
-groups_is_nfs = true
 scratch_recommended = true
-scratch_purge_policy_url = "https://hpc.gwu.edu/scratch-storage"
 
 [clusters.slurm]
 require_partition = true
 require_time_limit = true
-max_wall_time = "14-00:00:00"
-default_partition = "defq"
+default_partition = "cpu"
 default_time_limit = "01:00:00"
 
 [[clusters.slurm.partitions]]
-name = "defq"
+name = "cpu"
 kind = "cpu"
-cpu_model = "Dual Intel Xeon Gold 6148"
-cpu_cores = 40
-cpu_clock_ghz = 3.70
-ram_gb = 96
-interconnect = "Mellanox EDR Infiniband 100Gb"
-node_local_storage = "800 GB SSD (boot + node-local scratch)"
-notes = "General-purpose queue on 96 GB compute nodes."
+notes = "Default CPU partition; heterogeneous nodes; maximum 14 days."
 
 [[clusters.slurm.partitions]]
-name = "short"
-kind = "cpu"
-cpu_model = "Dual Intel Xeon Gold 6148"
-cpu_cores = 40
-cpu_clock_ghz = 3.70
-ram_gb = 96
-interconnect = "Mellanox EDR Infiniband 100Gb"
-node_local_storage = "800 GB SSD (boot + node-local scratch)"
-notes = "Same hardware as defq with 1-day time limit."
-
-[[clusters.slurm.partitions]]
-name = "tiny"
-kind = "cpu"
-cpu_model = "Dual Intel Xeon Gold 6148"
-cpu_cores = 40
-cpu_clock_ghz = 3.70
-ram_gb = 96
-interconnect = "Mellanox EDR Infiniband 100Gb"
-node_local_storage = "800 GB SSD (boot + node-local scratch)"
-notes = "Short jobs on standard compute nodes."
+name = "gpu"
+kind = "gpu"
+gpus = ["V100", "A100"]
+notes = "Heterogeneous GPU nodes; maximum 7 days. Inspect sinfo GRES and request the needed GPU type/count."
 
 [[clusters.slurm.partitions]]
 name = "nano"
 kind = "cpu"
-cpu_model = "Dual Intel Xeon Gold 6148"
-cpu_cores = 40
-cpu_clock_ghz = 3.70
-ram_gb = 96
-interconnect = "Mellanox EDR Infiniband 100Gb"
-node_local_storage = "800 GB SSD (boot + node-local scratch)"
-notes = "Burst jobs on standard compute nodes."
-
-[[clusters.slurm.partitions]]
-name = "highThru"
-kind = "cpu"
-cpu_model = "Dual Intel Xeon Gold 5122"
-cpu_cores = 8
-cpu_clock_ghz = 3.70
-ram_gb = 384
-interconnect = "Mellanox EDR Infiniband 100Gb"
-node_local_storage = "800 GB SSD (boot + node-local scratch)"
-notes = "High clock, low core-count nodes; good for serial/high-throughput workloads."
-
-[[clusters.slurm.partitions]]
-name = "highMem"
-kind = "cpu"
-cpu_model = "Dual Intel Xeon Gold 6140M"
-cpu_cores = 36
-cpu_clock_ghz = 3.70
-ram_gb = 3072
-interconnect = "Mellanox EDR Infiniband 100Gb"
-node_local_storage = "800 GB SSD (boot + node-local scratch)"
-notes = "Large-memory nodes (3 TB RAM)."
-
-[[clusters.slurm.partitions]]
-name = "highCore"
-kind = "cpu"
-notes = "High core-count CPU nodes (7-day limit) — confirm hardware details."
-
-[[clusters.slurm.partitions]]
-name = "384gb"
-kind = "cpu"
-cpu_model = "Dual Intel Xeon Gold 6148"
-cpu_cores = 40
-cpu_clock_ghz = 3.70
-ram_gb = 384
-interconnect = "Mellanox EDR Infiniband 100Gb"
-node_local_storage = "800 GB SSD (boot + node-local scratch)"
-notes = "384 GB memory CPU nodes."
-
-[[clusters.slurm.partitions]]
-name = "short-384gb"
-kind = "cpu"
-cpu_model = "Dual Intel Xeon Gold 6148"
-cpu_cores = 40
-cpu_clock_ghz = 3.70
-ram_gb = 384
-interconnect = "Mellanox EDR Infiniband 100Gb"
-node_local_storage = "800 GB SSD (boot + node-local scratch)"
-notes = "384 GB memory nodes with 1-day limit."
-
-[[clusters.slurm.partitions]]
-name = "debug"
-kind = "cpu"
-cpu_model = "Dual Intel Xeon Gold 6148"
-cpu_cores = 40
-cpu_clock_ghz = 3.70
-ram_gb = 96
-interconnect = "Mellanox EDR Infiniband 100Gb"
-node_local_storage = "800 GB SSD (boot + node-local scratch)"
-notes = "Generic debug queue (4 hours)."
-
-[[clusters.slurm.partitions]]
-name = "debug-cpu"
-kind = "cpu"
-cpu_model = "Dual Intel Xeon Gold 6148"
-cpu_cores = 40
-cpu_clock_ghz = 3.70
-ram_gb = 96
-interconnect = "Mellanox EDR Infiniband 100Gb"
-node_local_storage = "800 GB SSD (boot + node-local scratch)"
-notes = "CPU-only debug queue."
-
-[[clusters.slurm.partitions]]
-name = "small-gpu"
-kind = "gpu"
-gpu_model = "NVIDIA Tesla V100"
-gpu_count = 2
-ram_gb = 192
-cpu_model = "Dual Intel Xeon Gold 6148"
-cpu_cores = 40
-cpu_clock_ghz = 3.70
-interconnect = "Mellanox EDR Infiniband 100Gb"
-node_local_storage = "800 GB SSD (boot + node-local scratch)"
-notes = "Two V100 GPUs per node; omit --gres on queues backed by this hardware (full node allocation)."
-
-[[clusters.slurm.partitions]]
-name = "large-gpu"
-kind = "gpu"
-gpu_model = "NVIDIA Tesla V100 SXM2"
-gpu_count = 4
-gpu_memory_gb = 16
-gpu_total_memory_gb = 64
-ram_gb = 384
-cpu_model = "Dual Intel Xeon Gold 6140"
-cpu_cores = 36
-cpu_clock_ghz = 3.70
-interconnect = "Mellanox EDR Infiniband 100Gb (NVLink between GPUs)"
-node_local_storage = "800 GB SSD (boot + node-local scratch)"
-notes = "Four V100 SXM2 GPUs with NVLink."
-
-[[clusters.slurm.partitions]]
-name = "med-gpu"
-kind = "gpu"
-notes = "Medium GPU nodes; 7-day limit — confirm exact hardware (likely newer accelerators)."
-
-[[clusters.slurm.partitions]]
-name = "debug-gpu"
-kind = "gpu"
-gpu_model = "NVIDIA Tesla V100"
-gpu_count = 2
-ram_gb = 192
-cpu_model = "Dual Intel Xeon Gold 6148"
-cpu_cores = 40
-cpu_clock_ghz = 3.70
-interconnect = "Mellanox EDR Infiniband 100Gb"
-node_local_storage = "800 GB SSD (boot + node-local scratch)"
-notes = "GPU debug queue (full node allocation; omit --gres)."
-
-[[clusters.slurm.partitions]]
-name = "ultra-gpu"
-kind = "gpu"
-gpu_model = "NVIDIA A100"
-gpu_count = 8
-gpu_memory_gb = 80
-gpu_total_memory_gb = 640
-ram_gb = 512
-cpu_model = "Dual Intel Xeon Gold 5320"
-cpu_cores = 52
-cpu_clock_ghz = 2.20
-interconnect = "Mellanox EDR Infiniband 100Gb"
-node_local_storage = "800 GB SSD (boot + node-local scratch)"
-notes = "Eight A100 80GB GPUs per node."
+notes = "Short CPU jobs; maximum 30 minutes."
 
 [[clusters.slurm.partitions]]
 name = "superChip"
 kind = "gpu"
-gpu_model = "NVIDIA GH200 Grace Hopper Superchip"
-gpu_count = 1
-gpu_memory_gb = 96
-ram_gb = 480
-cpu_model = "NVIDIA Grace CPU"
-cpu_cores = 72
-interconnect = "NVLink-C2C"
-node_local_storage = "7.68 TB SSD"
-notes = "Grace Hopper Superchip nodes — confirm final production specs with HPC staff."
+gpus = ["GH200"]
+notes = "Grace Hopper nodes; maximum 7 days. Check software architecture compatibility."
 
 [[clusters.slurm.partitions]]
 name = "viz"
 kind = "gpu"
-notes = "Visualization GPU node — confirm hardware."
+gpus = ["L40S"]
+notes = "Visualization nodes; maximum 7 days."
+
+[[clusters.slurm.partitions]]
+name = "deus"
+notes = "Site-specific partition; Slurm currently advertises unlimited wall time. Confirm intended use and account eligibility with HPC staff."
 
 [clusters.prompts]
 slurm_safety_template = """
-Always submit compute with Slurm using -p <partition> and -t <time>. cd to {{groups_root}}/<your_group>/<your_user> (scratch) before heavy work. Do not run compute on login nodes.
-
-Keep login-shell execution enabled (the default) so environment modules work. When exploring modules, prefer patterns like:
-  module avail | grep <name>
-  module spider <name>
-  module keyword <term>
-and pipe long listings through head/less to stay readable.
+Run compute through Slurm with explicit -p <partition> and -t <time>. Use your verified scratch working directory under {{groups_root}}. Do not run compute on login nodes.
+Check current partitions with sinfo and limits with scontrol show partition. Metadata in this file is a snapshot, not a live inventory.
+Keep login_shell enabled for environment modules. Discover software with module spider <name>, module keyword <term>, or module avail 2>&1 | grep <name>.
 """
 
 [clusters.policy]
 template = """
-Pegasus ({{host}}) login nodes are for submission, data movement, compilation, and prep. Running jobs on login nodes is prohibited.
-Compute must be submitted via Slurm with both -p and -t; maximum wall time is 14 days.
-Use scratch for active workloads: {{groups_root}}. Home and groups (NFS) are not for running jobs. Scratch is purgeable; move long-term data elsewhere.
-Inspect with sinfo; monitor with squeue; review with sacct. VPN/on-campus access and 2FA are required.
+{{display_name}} ({{host}}): login nodes are for job submission, data movement, and lightweight preparation. Submit compute through Slurm with explicit partition and wall time.
+Use your verified scratch directory under {{groups_root}} for active workloads. Scratch is temporary storage; follow current site retention guidance and store long-term data elsewhere. Do not assume group names match directory names; inspect the actual directory and set default_cwd accordingly.
+Off campus, connect to GW VPN and keep it connected. Losing VPN interrupts cluster access and may terminate the SSH connection. If the connection drops, tell the user and ask them to restore VPN and run ghm up with their NetID in their own terminal. The user must complete 2FA themselves. Agents must never guess, generate, reuse, or submit verification codes or ask for them in chat. Do not reset shared SSH connections or retry uncertain job submissions automatically.
 
-Environment modules load correctly when commands run inside a login shell; leave login_shell=true unless you have a specific reason not to. To discover modules without drowning in output, use:
-  module spider <name>        # shows availability and requirements
-  module keyword <term>       # fuzzy search descriptions
-  module avail | grep <term>  # filter long listings (pipe to head/less as needed)
+Partition snapshot checked 2026-09-22: cpu (14 days), gpu/superChip/viz (7 days), nano (30 minutes), and deus (site-specific). Verify with sinfo and scontrol show partition before submitting. Legacy defq/debug/debug-gpu queues are absent from this snapshot.
+GPU resources are advertised through Slurm GRES. Inspect sinfo -o '%P %G' and request the appropriate resources, such as --gres=gpu:v100:1 on gpu (the GPU type is required). Do not blindly remove GPU requests or request an exclusive full node to work around errors; inspect the error and current site configuration.
 
-Scratch directories can vary by group. If `cd {{groups_root}}/<group>/<user>` fails, run `ls {{groups_root}}/<group>` to confirm the exact subdirectory.
+Example lightweight CPU job: sbatch -p nano -t 00:01:00 -n 1 --mem=128M --wrap 'hostname'
+For GPU validation without allocating a job, use sbatch --test-only -p gpu -t 00:01:00 -n 1 --mem=1G --gres=gpu:v100:1 --wrap 'nvidia-smi'.
+Monitor jobs with squeue and inspect failures with scontrol show job or sacct. A newly submitted job may take a moment to appear in queries.
 
-Partition notes:
-  - `debug-gpu` and other GPU nodes grant the full node with its GPU; omit `--gres` flags.
-  - GPU queues generally have 7-day limits; `debug-*` partitions are capped at 4 hours.
-
-Apptainer tips:
-  - `module load squashfs/4.4` provides `mksquashfs`, required for Docker-based `apptainer exec`.
-  - Set `APPTAINER_CACHEDIR` to a scratch location for faster rebuilds.
-  - Bind scratch explicitly when running from other locations: `apptainer exec --bind {{groups_root}}:{{groups_root}} --nv ...`.
-  - Install helper tools (e.g., `uv`) once on the host and reuse them instead of relying on minimal container images.
-
-Troubleshooting checklist:
-  - `scontrol show job <id>` to inspect ExitCode and node allocation.
-  - `module avail` / `module spider` to locate missing binaries.
-  - `Invalid generic resource (gres)` usually means the queue manages GPUs automatically; remove manual `--gres` flags.
-  - `tmux`/`ssh` issues? Ensure the ControlMaster is running via `ghm status` or `gwu-hpc-mcp status`.
-  - If `ghm status` shows that the ControlMaster is not running, you need to instruct the user to run `ghm up`, as it has a 2FA step that only the user can complete.
+Keep login_shell=true for environment modules. Use module spider, module keyword, and filtered module avail listings. For Apptainer, inspect available modules, put APPTAINER_CACHEDIR on scratch, and bind scratch explicitly when needed. Discover required helper tools instead of assuming a particular module version.
+Wide terminal output may wrap; shell_exec with pty=false preserves separate stdout and stderr. For tmux/SSH problems, check ghm status before reconnecting.
 """
