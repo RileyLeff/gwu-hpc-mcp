@@ -365,7 +365,7 @@ impl McpServer {
             idempotent_hint = true,
             open_world_hint = false
         ),
-        description = "Report whether the user's local SSH ControlMaster (the authenticated cluster connection) is Running, Missing or Stale. \
+        description = "Report whether the user's local authenticated cluster connection (an SSH ControlMaster, or the built-in SSH client on Windows) is Running, Missing or Stale. \
             It does not contact the cluster; run a harmless shell_exec such as `hostname` to confirm end-to-end access. \
             If it is not Running, ask the user to reconnect with `ghm up` in their own terminal. Never guess, request or submit 2FA codes."
     )]
@@ -376,7 +376,7 @@ impl McpServer {
         let snapshot = self.snapshot();
         let cluster = self.acquire_cluster(normalize_cluster_id(params.cluster.as_deref()))?;
         let context = self.build_context(cluster.clone());
-        let control_path = context.control_path()?;
+        let endpoint = context.connection_endpoint()?;
         let state = ssh::check_master(&context).await?;
         let (state_str, message) = match state {
             MasterState::Running => ("Running".to_string(), None),
@@ -394,7 +394,7 @@ impl McpServer {
         };
         Ok(Json(HealthCheckResponse {
             master_state: state_str,
-            control_path: control_path.to_str().unwrap_or_default().to_string(),
+            control_path: endpoint,
             message,
             config_version: snapshot.version,
             error: None,
@@ -710,6 +710,7 @@ pub struct HpcDescribeOutput {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct HealthCheckResponse {
     pub master_state: String,
+    /// The ControlMaster socket, or the built-in client's local endpoint.
     pub control_path: String,
     pub message: Option<String>,
     #[schemars(with = "i64")]

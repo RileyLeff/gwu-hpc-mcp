@@ -140,6 +140,36 @@ pub struct ClusterSsh {
     pub ssh_binary: String,
     #[serde(default = "ClusterSsh::default_tmux_binary")]
     pub tmux_binary: String,
+    /// "auto" uses OpenSSH ControlMaster on macOS/Linux and the built-in client on Windows.
+    #[serde(default)]
+    pub backend: SshBackend,
+    /// Private keys the built-in client tries (default: ~/.ssh/id_ed25519, id_ecdsa, id_rsa).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub identity_files: Vec<String>,
+    /// known_hosts file for the built-in client (default: ~/.ssh/known_hosts).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub known_hosts_file: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum SshBackend {
+    #[default]
+    Auto,
+    /// System OpenSSH with ControlMaster connection sharing (macOS/Linux/WSL).
+    Openssh,
+    /// Built-in SSH client held by a local `ghm up` broker process (all platforms).
+    Builtin,
+}
+
+impl SshBackend {
+    pub fn resolve(self) -> SshBackend {
+        match self {
+            SshBackend::Auto if cfg!(windows) => SshBackend::Builtin,
+            SshBackend::Auto => SshBackend::Openssh,
+            other => other,
+        }
+    }
 }
 
 impl ClusterSsh {
@@ -168,6 +198,9 @@ impl Default for ClusterSsh {
             server_alive_count_max: Self::default_server_alive_count_max(),
             ssh_binary: Self::default_ssh_binary(),
             tmux_binary: Self::default_tmux_binary(),
+            backend: SshBackend::default(),
+            identity_files: Vec::new(),
+            known_hosts_file: None,
         }
     }
 }

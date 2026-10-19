@@ -1,19 +1,22 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tracing::{info, warn};
 
-use crate::config::ConfigManager;
+use crate::config::{ConfigManager, SshBackend};
 use crate::errors::{AppError, AppResult};
 use crate::mcp::run_stdio;
 use crate::ssh::{MasterState, SshContext};
 use crate::util::expand_path;
 
+mod broker;
 mod config;
 mod errors;
+mod ipc;
+mod known_hosts;
 mod mcp;
 mod policy;
 mod sessions;
@@ -45,11 +48,11 @@ struct Cli {
 enum Command {
     /// Run the MCP stdio server
     ServeStdio,
-    /// Establish the SSH ControlMaster interactively
-    Up,
-    /// Terminate the SSH ControlMaster
+    /// Connect to the cluster, answering password/2FA prompts in this terminal
+    Up(UpArgs),
+    /// Close the shared cluster connection
     Down,
-    /// Show ControlMaster status
+    /// Show the cluster connection status
     Status,
     /// Run a quick exec test (hostname && pwd)
     Test,
@@ -58,6 +61,17 @@ enum Command {
     /// Configuration helpers
     #[command(subcommand)]
     Config(ConfigCommand),
+    /// Internal: the background process behind `up` for the built-in SSH client
+    #[command(hide = true)]
+    Broker,
+}
+
+#[derive(Args, Debug, Clone)]
+struct UpArgs {
+    /// Built-in SSH client only: keep the connection in this terminal instead
+    /// of a background process (close it with Ctrl-C)
+    #[arg(long)]
+    foreground: bool,
 }
 
 #[derive(Subcommand, Clone)]
@@ -111,7 +125,8 @@ pub async fn async_main() -> AppResult<()> {
             let _watcher = start_config_watcher(config.clone()).ok();
             run_stdio(config, remote_user).await
         }
-        Command::Up => cmd_up(&config, &remote_user, cli.cluster.as_deref()).await,
+        Command::Up(args) => cmd_up(&config, &remote_user, cli.cluster.as_deref(), args).await,
+        Command::Broker => cmd_broker(&config, &remote_user, cli.cluster.as_deref()).await,
         Command::Down => cmd_down(&config, &remote_user, cli.cluster.as_deref()).await,
         Command::Status => cmd_status(&config, &remote_user, cli.cluster.as_deref()).await,
         Command::Test => cmd_test(&config, &remote_user, cli.cluster.as_deref()).await,
@@ -163,18 +178,65 @@ async fn cmd_up(
     config: &ConfigManager,
     remote_user: &str,
     cluster_opt: Option<&str>,
+    args: UpArgs,
 ) -> AppResult<()> {
     let cluster = config.get_cluster(cluster_opt)?;
     let context = SshContext::new(cluster.clone(), remote_user.to_string());
-    let control_path = context.control_path()?;
+    let endpoint = context.connection_endpoint()?;
+    if context.backend() == SshBackend::Builtin {
+        println!(
+            "Connecting to {} with the built-in SSH client ({})",
+            cluster.display_name(),
+            endpoint
+        );
+        broker::up(
+            &context,
+            broker::UpOptions {
+                foreground: args.foreground,
+                config_path: absolute(config.path()),
+            },
+        )
+        .await?;
+        if !args.foreground {
+            println!(
+                "Cluster connection is active. It stays open after this terminal closes; run `down` to close it."
+            );
+        }
+        return Ok(());
+    }
+    if args.foreground {
+        return Err(AppError::InvalidInput(
+            "--foreground applies to the built-in SSH client (ssh.backend = \"builtin\")".into(),
+        ));
+    }
     println!(
         "Starting ControlMaster for {} (socket: {})",
         cluster.display_name(),
-        control_path.display()
+        endpoint
     );
     ssh::spawn_master_interactive(&context).await?;
     println!("ControlMaster is now active.");
     Ok(())
+}
+
+fn absolute(path: &Path) -> PathBuf {
+    std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+async fn cmd_broker(
+    config: &ConfigManager,
+    remote_user: &str,
+    cluster_opt: Option<&str>,
+) -> AppResult<()> {
+    let cluster = config.get_cluster(cluster_opt)?;
+    let context = SshContext::new(cluster, remote_user.to_string());
+    info!("broker starting (pid {})", std::process::id());
+    let result = broker::run(&context, broker::AuthVia::Attach).await;
+    match &result {
+        Ok(()) => info!("broker exiting"),
+        Err(e) => warn!("broker exiting: {e}"),
+    }
+    result
 }
 
 async fn cmd_down(
@@ -184,9 +246,12 @@ async fn cmd_down(
 ) -> AppResult<()> {
     let cluster = config.get_cluster(cluster_opt)?;
     let context = SshContext::new(cluster.clone(), remote_user.to_string());
-    println!("Shutting down ControlMaster for {}", cluster.display_name());
+    println!(
+        "Closing the cluster connection for {}",
+        cluster.display_name()
+    );
     ssh::shutdown_master(&context).await?;
-    println!("ControlMaster terminated.");
+    println!("Cluster connection closed.");
     Ok(())
 }
 
@@ -197,10 +262,11 @@ async fn cmd_status(
 ) -> AppResult<()> {
     let cluster = config.get_cluster(cluster_opt)?;
     let context = SshContext::new(cluster.clone(), remote_user.to_string());
-    let control_path = context.control_path()?;
+    let endpoint = context.connection_endpoint()?;
     let state = ssh::check_master(&context).await?;
     println!("Cluster: {}", cluster.display_name());
-    println!("ControlPath: {}", control_path.display());
+    println!("SSH backend: {}", backend_name(context.backend()));
+    println!("Connection: {endpoint}");
     match state {
         MasterState::Running => println!("Status: running"),
         MasterState::Missing => println!("Status: missing (run `gwu-hpc-mcp up`)"),
@@ -259,27 +325,50 @@ async fn cmd_doctor(
     let context = SshContext::new(cluster.clone(), remote_user.to_string());
     println!("Configuration path: {}", config.path().display());
     println!("Target cluster: {}", cluster.display_name());
-    println!("SSH binary: {}", context.cluster.ssh.ssh_binary);
-    println!("tmux binary: {}", context.cluster.ssh.tmux_binary);
-    match which(&context.cluster.ssh.ssh_binary) {
-        Ok(path) => println!("Found ssh at {}", path.display()),
-        Err(_) => println!("WARNING: ssh binary not found in PATH"),
+    println!("SSH backend: {}", backend_name(context.backend()));
+    println!("tmux binary (remote): {}", context.cluster.ssh.tmux_binary);
+    if context.backend() == SshBackend::Builtin {
+        let settings = broker::Settings::from_context(&context)?;
+        println!("known_hosts: {}", settings.known_hosts.display());
+        let keys: Vec<String> = settings
+            .identity_files
+            .iter()
+            .filter(|p| p.exists())
+            .map(|p| p.display().to_string())
+            .collect();
+        if keys.is_empty() {
+            println!("Identity files: none found (password and 2FA prompts will be used)");
+        } else {
+            println!("Identity files: {}", keys.join(", "));
+        }
+    } else {
+        println!("SSH binary: {}", context.cluster.ssh.ssh_binary);
+        match which(&context.cluster.ssh.ssh_binary) {
+            Ok(path) => println!("Found ssh at {}", path.display()),
+            Err(_) => println!("WARNING: ssh binary not found in PATH"),
+        }
+        if cfg!(windows) {
+            println!(
+                "WARNING: Windows OpenSSH cannot share connections (no ControlMaster); set ssh.backend = \"builtin\" or \"auto\""
+            );
+        }
     }
     println!("tmux and GNU timeout must be available on the remote cluster (not locally).");
-    let control_path = context.control_path()?;
-    println!("ControlPath: {}", control_path.display());
+    println!("Connection: {}", context.connection_endpoint()?);
     match ssh::check_master(&context).await {
-        Ok(MasterState::Running) => println!("ControlMaster: running"),
-        Ok(MasterState::Missing) => println!("ControlMaster: missing"),
-        Ok(MasterState::Stale) => println!("ControlMaster: stale"),
-        Err(err) => println!("ControlMaster check failed: {}", err),
-    }
-    println!("Attempting ssh -O check...");
-    match ssh::check_master(&context).await {
-        Ok(state) => println!("ControlMaster state: {:?}", state),
-        Err(err) => println!("ssh check failed: {}", err),
+        Ok(MasterState::Running) => println!("Cluster connection: running"),
+        Ok(MasterState::Missing) => println!("Cluster connection: missing (run `up`)"),
+        Ok(MasterState::Stale) => println!("Cluster connection: stale (run `down` then `up`)"),
+        Err(err) => println!("Cluster connection check failed: {}", err),
     }
     Ok(())
+}
+
+fn backend_name(backend: SshBackend) -> &'static str {
+    match backend {
+        SshBackend::Builtin => "built-in SSH client",
+        _ => "OpenSSH ControlMaster",
+    }
 }
 
 fn start_config_watcher(config: ConfigManager) -> notify::Result<RecommendedWatcher> {
