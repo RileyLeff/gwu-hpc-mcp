@@ -256,12 +256,34 @@ script that speaks MCP to `ghm serve-stdio`. See the
 
 ## Tools and behavior
 
-- `hpc_describe`: configured policy, filesystem, and partition snapshot. Read it
-  before using the cluster; use `sinfo`/`scontrol` to verify current resources.
-- `health_check`: reports whether the local SSH ControlMaster is running.
+The server identifies itself as `gwu-hpc-mcp` with the crate version. It answers
+both the `initialize` handshake (up to protocol 2025-11-25) and the stateless
+2026-07-28 `server/discover` lifecycle. Every tool has a title, behavior
+annotations and described parameters:
+
+| Tool | Read-only | Destructive | Idempotent | Open world |
+| --- | --- | --- | --- | --- |
+| `health_check`, `hpc_describe` | yes | no | yes | no |
+| `shell_exec`, `session_exec` | no | yes | no | yes |
+| `session_close` | no | yes | no | no |
+| `session_open`, `upload_text_bundle` | no | no | no | no |
+
+Clients such as Codex auto-approve only read-only tools; the rest ask first.
+
+- `hpc_describe`: configured policy, filesystem, and partition snapshot, returned
+  as plain TOML text. Read it before using the cluster; use `sinfo`/`scontrol` to
+  verify current resources.
+- `health_check`: reports whether the local SSH ControlMaster is running. It
+  does not contact the cluster.
 - `shell_exec`: executes a shell command, optionally with cwd, environment,
-  timeout, and PTY. `pty=false` keeps stdout and stderr separate. `ok` is true
-  only when `exit_code` is zero. A failed cwd stops execution.
+  timeout, and PTY. Each call is a fresh shell; pass `cwd` and `env` instead of
+  relying on `cd` or `export`. `pty` defaults to false (`[defaults].pty`), which
+  keeps stdout and stderr separate; `pty=true` merges them into one `pty` stream.
+  `ok` is true only when `exit_code` is zero. A failed cwd stops execution.
+  `timeout_s` defaults to `[defaults].exec_timeout_s` (120 seconds). Cancelling
+  the request from the client kills the local SSH client. If the request carries
+  a `progressToken`, the server sends up to one `notifications/progress` per
+  second with the output byte count.
 - `upload_text_bundle`: creates a new source bundle below configured
   `[defaults].upload_root` (falling back to `default_cwd`), with 1–128 flat text
   files and required UTF-8 SHA-256 hashes. Set upload_root to the intended
@@ -285,13 +307,34 @@ script that speaks MCP to `ghm serve-stdio`. See the
   `/tmp/gwu-hpc-mcp-*`. Commands to the same session are serialized within one
   server process; do not drive the same pane from multiple clients simultaneously.
 
+Command tools return structured content with `ok`, `exit_code`, `duration_ms`,
+`streams`, `truncated` and optional `status` notes. Each stream is capped at
+`[defaults].max_output_bytes` (32 KiB). Over the cap, the start and end are kept
+around an omission marker, and `truncated` is true.
+
+Failures are tool results with `isError: true`, not JSON-RPC errors, so the model
+sees them. These include a timeout, a missing connection (`Needs2FA`), a denylist
+match, an SSH or tmux failure, invalid input, and cancellation. The structured
+content has the tool's usual shape with `ok: false` and an
+`error: {code, message, hint}`, plus any output captured before the failure;
+`exit_code` is absent when the command did not finish. JSON-RPC errors are
+reserved for malformed requests.
+
+The `slurm-safety` prompt takes an optional `cluster` argument and returns the
+guidance as a user message.
+
+Some clients enforce their own per-tool timeout, and Codex's `tool_timeout_sec`
+may be shorter than the 120-second `shell_exec` default. Raise it in the client
+or pass a smaller `timeout_s`. Run long work as Slurm jobs.
+
 The shell denylist is a heuristic, not a sandbox. Slurm guidance is advisory;
 there is no job-submission wrapper enforcing resource or filesystem policy.
 Commands run with your account's privileges. A shell timeout stops the local SSH
 client; it does not cancel submitted Slurm jobs. Use `scancel` for those jobs.
 
-Logs go to stderr, leaving stdout exclusively for MCP JSON. Config edits are
-hot-reloaded when detected; concurrency changes require restarting the server.
+Logs go to stderr, leaving stdout exclusively for MCP JSON; the server sends no
+MCP log notifications. Config edits are hot-reloaded when detected; concurrency
+changes require restarting the server.
 
 ## Cluster metadata
 
@@ -318,8 +361,8 @@ python3 tests/mcp_smoke.py --binary target/debug/ghm
 
 The smoke test uses the real MCP stdio protocol and requires an existing Pegasus
 ControlMaster plus your local config. It creates and removes a uniquely named
-tmux session, checks shell errors, Unicode/large output, invalid cwd, timeout,
-and session reuse. It does not submit Slurm jobs.
+tmux session, checks shell errors, Unicode/large (truncated) output, invalid cwd,
+timeout as an `isError` result, and session reuse. It does not submit Slurm jobs.
 
 `ghm doctor` checks local configuration and binaries. `ghm down` closes the SSH
 ControlMaster. Keep the connection open while using the tools.

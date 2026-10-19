@@ -65,8 +65,9 @@ the old tool list or server instructions. You do not need to rerun `ghm up` when
 its SSH connection is still healthy. `codex mcp login` is for MCP OAuth servers;
 it is not the authentication step for this local SSH-backed server.
 
-For longer tool calls, check the client's tool timeout as well as the MCP
-`timeout_s` argument. Run durable compute as Slurm jobs and poll their status.
+For longer tool calls, check the client's tool timeout (`tool_timeout_sec` in
+Codex) as well as the MCP `timeout_s` argument, which defaults to 120 seconds for
+`shell_exec`. Run durable compute as Slurm jobs and poll their status.
 See the [official Codex MCP documentation](https://developers.openai.com/codex/mcp).
 
 ## Windows-native clients: launch the server inside WSL
