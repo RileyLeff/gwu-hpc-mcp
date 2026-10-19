@@ -7,9 +7,9 @@ use rmcp::{
     handler::server::router::tool::ToolRouter,
     handler::server::wrapper::Parameters,
     model::{
-        GetPromptResult, ListPromptsResult, ListResourcesResult, LoggingLevel,
-        LoggingMessageNotificationParam, Prompt, PromptMessage, PromptMessageRole,
-        ReadResourceResult, Resource, ResourceContents, ServerCapabilities, ServerInfo,
+        GetPromptResponse, GetPromptResult, ListPromptsResult, ListResourcesResult, LoggingLevel,
+        LoggingMessageNotificationParam, Prompt, PromptMessage, ReadResourceResponse,
+        ReadResourceResult, Resource, ResourceContents, Role, ServerCapabilities, ServerConfig,
     },
     tool, tool_handler, tool_router,
 };
@@ -216,11 +216,10 @@ impl McpServer {
             let peer_clone = log_peer.clone();
             tokio::spawn(async move {
                 let _ = peer_clone
-                    .notify_logging_message(LoggingMessageNotificationParam {
-                        level: LoggingLevel::Info,
-                        logger: Some(logger_name),
-                        data,
-                    })
+                    .notify_logging_message(
+                        LoggingMessageNotificationParam::new(LoggingLevel::Info, data)
+                            .with_logger(logger_name),
+                    )
                     .await;
             });
         };
@@ -299,11 +298,10 @@ impl McpServer {
                     let peer_clone = log_peer.clone();
                     tokio::spawn(async move {
                         let _ = peer_clone
-                            .notify_logging_message(LoggingMessageNotificationParam {
-                                level: LoggingLevel::Info,
-                                logger: Some(logger),
-                                data,
-                            })
+                            .notify_logging_message(
+                                LoggingMessageNotificationParam::new(LoggingLevel::Info, data)
+                                    .with_logger(logger),
+                            )
                             .await;
                     });
                     Ok(())
@@ -418,24 +416,23 @@ impl McpServer {
     }
 }
 
-#[tool_handler]
+#[tool_handler(router = self.tool_router)]
 impl rmcp::ServerHandler for McpServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            instructions: Some(include_str!("../docs/agent-connection.md").into()),
-            capabilities: ServerCapabilities::builder()
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(
+            ServerCapabilities::builder()
                 .enable_tools()
                 .enable_prompts()
                 .enable_resources()
                 .enable_logging()
                 .build(),
-            ..Default::default()
-        }
+        )
+        .with_instructions(include_str!("../docs/agent-connection.md"))
     }
 
     fn list_prompts(
         &self,
-        _request: Option<rmcp::model::PaginatedRequestParam>,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListPromptsResult, rmcp::ErrorData>> + Send + '_
     {
@@ -449,9 +446,9 @@ impl rmcp::ServerHandler for McpServer {
 
     fn get_prompt(
         &self,
-        request: rmcp::model::GetPromptRequestParam,
+        request: rmcp::model::GetPromptRequestParams,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
-    ) -> impl std::future::Future<Output = Result<GetPromptResult, rmcp::ErrorData>> + Send + '_
+    ) -> impl std::future::Future<Output = Result<GetPromptResponse, rmcp::ErrorData>> + Send + '_
     {
         let cluster = match request.arguments.and_then(|args| {
             args.get("cluster")
@@ -468,13 +465,14 @@ impl rmcp::ServerHandler for McpServer {
                     .slurm_prompt
                     .or_else(|| Some(rendered.policy.clone()))
                     .unwrap_or_else(|| "No prompt configured.".to_string());
-                Ok(GetPromptResult {
-                    description: Some(format!(
-                        "Slurm safety guidance for {}",
-                        cluster.display_name()
-                    )),
-                    messages: vec![PromptMessage::new_text(PromptMessageRole::Assistant, text)],
-                })
+                Ok(
+                    GetPromptResult::new(vec![PromptMessage::new_text(Role::Assistant, text)])
+                        .with_description(format!(
+                            "Slurm safety guidance for {}",
+                            cluster.display_name()
+                        ))
+                        .into(),
+                )
             }
             Err(err) => Err(to_mcp_error(err)),
         };
@@ -483,7 +481,7 @@ impl rmcp::ServerHandler for McpServer {
 
     fn list_resources(
         &self,
-        _request: Option<rmcp::model::PaginatedRequestParam>,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListResourcesResult, rmcp::ErrorData>> + Send + '_
     {
@@ -498,11 +496,10 @@ impl rmcp::ServerHandler for McpServer {
 
     fn read_resource(
         &self,
-        request: rmcp::model::ReadResourceRequestParam,
+        request: rmcp::model::ReadResourceRequestParams,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
-    ) -> impl std::future::Future<Output = Result<rmcp::model::ReadResourceResult, rmcp::ErrorData>>
-    + Send
-    + '_ {
+    ) -> impl std::future::Future<Output = Result<ReadResourceResponse, rmcp::ErrorData>> + Send + '_
+    {
         let uri = request.uri;
         let (cluster_id, kind) = match parse_hpc_uri(&uri) {
             Some(parts) => parts,
@@ -530,9 +527,7 @@ impl rmcp::ServerHandler for McpServer {
             }
         };
         let contents = ResourceContents::text(text, uri);
-        std::future::ready(Ok(ReadResourceResult {
-            contents: vec![contents],
-        }))
+        std::future::ready(Ok(ReadResourceResult::new(vec![contents]).into()))
     }
 }
 
@@ -745,10 +740,9 @@ fn build_resource_set(cluster: &Cluster) -> Vec<Resource> {
 }
 
 fn make_resource(uri: &str, name: &str, description: &str) -> Resource {
-    let mut raw = rmcp::model::RawResource::new(uri.to_string(), name.to_string());
-    raw.description = Some(description.to_string());
-    raw.mime_type = Some("text/plain".to_string());
-    rmcp::model::Annotated::new(raw, None)
+    Resource::new(uri, name)
+        .with_description(description)
+        .with_mime_type("text/plain")
 }
 
 fn parse_hpc_uri(uri: &str) -> Option<(String, String)> {

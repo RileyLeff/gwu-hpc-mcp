@@ -4,7 +4,7 @@ version = "0.1.2"
 edition = "2024"
 
 [dependencies]
-rmcp = { version = "0.9", features = ["server", "transport-io"] }
+rmcp = { version = "3.5", features = ["server", "transport-io"] }
 tokio = { version = "1.39", features = ["full"] }
 tokio-util = "0.7"
 tokio-stream = "0.1"
