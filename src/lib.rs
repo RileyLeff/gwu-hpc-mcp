@@ -144,6 +144,7 @@ fn init_tracing() {
                 .unwrap_or_else(|_| "gwu_hpc_mcp=info".into()),
         )
         .with_writer(std::io::stderr)
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
         .with_target(false)
         .try_init();
 }
