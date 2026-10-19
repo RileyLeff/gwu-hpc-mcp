@@ -41,6 +41,18 @@ libc = "0.2.191"
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_Pipes", "Win32_System_Memory", "Win32_System_Console"] }
 
+# cargo-binstall: fetch the prebuilt archives that dist uploads to GitHub
+# Releases. dist tarballs nest files under `{name}-{target}/`; its Windows
+# zips are flat.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }{ archive-suffix }"
+bin-dir = "{ name }-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "txz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+bin-dir = "{ bin }{ binary-ext }"
+
 # The profile that 'dist' will build with
 [profile.dist]
 inherits = "release"
