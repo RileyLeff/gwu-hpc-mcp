@@ -7,8 +7,8 @@ use rmcp::{
     handler::server::router::tool::ToolRouter,
     handler::server::wrapper::Parameters,
     model::{
-        GetPromptResponse, GetPromptResult, ListPromptsResult, ListResourcesResult, LoggingLevel,
-        LoggingMessageNotificationParam, Prompt, PromptMessage, ReadResourceResponse,
+        GetPromptResponse, GetPromptResult, Implementation, ListPromptsResult, ListResourcesResult,
+        LoggingLevel, LoggingMessageNotificationParam, Prompt, PromptMessage, ReadResourceResponse,
         ReadResourceResult, Resource, ResourceContents, Role, ServerCapabilities, ServerConfig,
     },
     tool, tool_handler, tool_router,
@@ -426,6 +426,13 @@ impl rmcp::ServerHandler for McpServer {
                 .enable_resources()
                 .enable_logging()
                 .build(),
+        )
+        .with_server_info(
+            Implementation::new("gwu-hpc-mcp", env!("CARGO_PKG_VERSION"))
+                .with_title("GWU HPC cluster")
+                .with_description(
+                    "Run commands, tmux sessions and uploads on GWU's Pegasus HPC cluster over the user's authenticated SSH connection.",
+                ),
         )
         .with_instructions(include_str!("../docs/agent-connection.md"))
     }
