@@ -9,8 +9,8 @@ use rmcp::{
     handler::server::wrapper::Parameters,
     model::{
         CallToolResponse, CallToolResult, GetPromptResponse, GetPromptResult, Implementation,
-        ListPromptsResult, ListResourcesResult, ProgressNotificationParam, Prompt, PromptMessage,
-        ReadResourceResponse, ReadResourceResult, Resource, ResourceContents, Role,
+        ListPromptsResult, ListResourcesResult, ProgressNotificationParam, Prompt, PromptArgument,
+        PromptMessage, ReadResourceResponse, ReadResourceResult, Resource, ResourceContents, Role,
         ServerCapabilities, ServerConfig,
     },
     service::RequestContext,
@@ -428,11 +428,20 @@ impl rmcp::ServerHandler for McpServer {
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListPromptsResult, rmcp::ErrorData>> + Send + '_
     {
-        let prompts = vec![Prompt::new(
-            "slurm-safety",
-            Some("Safety guidance for Slurm job submission".to_string()),
-            None,
-        )];
+        let prompts = vec![
+            Prompt::new(
+                "slurm-safety",
+                Some("Safety guidance for Slurm job submission"),
+                Some(vec![
+                    PromptArgument::new("cluster")
+                        .with_description(
+                            "Cluster id from the config; omit for the default cluster.",
+                        )
+                        .with_required(false),
+                ]),
+            )
+            .with_title("Slurm safety guidance"),
+        ];
         std::future::ready(Ok(ListPromptsResult::with_all_items(prompts)))
     }
 
@@ -458,7 +467,7 @@ impl rmcp::ServerHandler for McpServer {
                     .or_else(|| Some(rendered.policy.clone()))
                     .unwrap_or_else(|| "No prompt configured.".to_string());
                 Ok(
-                    GetPromptResult::new(vec![PromptMessage::new_text(Role::Assistant, text)])
+                    GetPromptResult::new(vec![PromptMessage::new_text(Role::User, text)])
                         .with_description(format!(
                             "Slurm safety guidance for {}",
                             cluster.display_name()
