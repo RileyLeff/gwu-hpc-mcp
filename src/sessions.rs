@@ -47,18 +47,14 @@ impl SessionManager {
             .map(|_| ())
     }
 
-    pub async fn exec<F>(
+    pub async fn exec(
         &self,
         name: &str,
         command: &str,
         cwd: Option<&str>,
         env: &HashMap<String, String>,
         timeout: Option<Duration>,
-        mut on_chunk: F,
-    ) -> Result<SessionExecResult, SessionExecFailure>
-    where
-        F: FnMut(&str) -> AppResult<()>,
-    {
+    ) -> Result<SessionExecResult, SessionExecFailure> {
         validate_name(name).map_err(|e| SessionExecFailure::from_error(e, Duration::ZERO))?;
 
         // Serialize commands per pane; two send-keys calls must never interleave.
@@ -138,7 +134,6 @@ impl SessionManager {
         )
         .await;
         let output = String::from_utf8_lossy(&bytes).into_owned();
-        on_chunk(&output).map_err(|e| SessionExecFailure::from_error(e, start.elapsed()))?;
         if exit_code == 124 || exit_code == 137 {
             return Err(SessionExecFailure {
                 error: AppError::SshTimeout(limit),

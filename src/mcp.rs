@@ -3,22 +3,25 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rmcp::{
-    Json, ServiceExt,
+    Json, RoleServer, ServiceExt,
     handler::server::router::tool::ToolRouter,
     handler::server::tool::IntoCallToolResult,
     handler::server::wrapper::Parameters,
     model::{
         CallToolResponse, CallToolResult, GetPromptResponse, GetPromptResult, Implementation,
-        ListPromptsResult, ListResourcesResult, LoggingLevel, LoggingMessageNotificationParam,
-        Prompt, PromptMessage, ReadResourceResponse, ReadResourceResult, Resource,
-        ResourceContents, Role, ServerCapabilities, ServerConfig,
+        ListPromptsResult, ListResourcesResult, ProgressNotificationParam, Prompt, PromptMessage,
+        ReadResourceResponse, ReadResourceResult, Resource, ResourceContents, Role,
+        ServerCapabilities, ServerConfig,
     },
+    service::RequestContext,
     tool, tool_handler, tool_router,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
+use tokio::task::JoinHandle;
+use tokio::time::Instant;
 
 use crate::config::{Cluster, ConfigManager, ConfigSnapshot};
 use crate::errors::{AppError, AppResult};
@@ -142,7 +145,7 @@ impl McpServer {
     pub async fn shell_exec(
         &self,
         Parameters(params): Parameters<ShellExecParams>,
-        peer: rmcp::service::Peer<rmcp::RoleServer>,
+        request: RequestContext<RoleServer>,
     ) -> Result<Json<ExecResponse>, ToolFailure<ExecResponse>> {
         crate::util::validate_env(&params.env)?;
         let snapshot = self.snapshot();
@@ -186,32 +189,17 @@ impl McpServer {
                 .unwrap_or(snapshot.config.defaults.login_shell),
             timeout: params.timeout_s.map(Duration::from_secs),
         };
-        let cluster_id = cluster.id.clone();
-        let log_peer = peer.clone();
-        let mut log_closure = move |stream: &str, chunk: &[u8]| {
-            if chunk.is_empty() {
-                return;
+        let mut progress = OutputProgress::start(&request);
+        let exec_result = ssh::exec(&context, exec_request, |_, chunk: &[u8]| {
+            if let Some(progress) = progress.as_mut() {
+                progress.record(chunk.len());
             }
-            let text = String::from_utf8_lossy(chunk).to_string();
-            let logger_name = format!("shell_exec.{stream}");
-            let data = json!({
-                "cluster": cluster_id,
-                "stream": stream,
-                "text": text,
-            });
-            let peer_clone = log_peer.clone();
-            tokio::spawn(async move {
-                let _ = peer_clone
-                    .notify_logging_message(
-                        LoggingMessageNotificationParam::new(LoggingLevel::Info, data)
-                            .with_logger(logger_name),
-                    )
-                    .await;
-            });
-        };
-
-        let exec_result = ssh::exec(&context, exec_request, &mut log_closure).await;
+        })
+        .await;
         drop(permit);
+        if let Some(progress) = progress {
+            progress.finish().await;
+        }
         let limit = snapshot.config.defaults.max_output_bytes;
         match exec_result {
             Ok(result) => Ok(Json(ExecResponse::completed(result, status).capped(limit))),
@@ -265,15 +253,12 @@ impl McpServer {
     pub async fn session_exec(
         &self,
         Parameters(params): Parameters<SessionExecParams>,
-        peer: rmcp::service::Peer<rmcp::RoleServer>,
     ) -> Result<Json<ExecResponse>, ToolFailure<ExecResponse>> {
         let limit = self.snapshot().config.defaults.max_output_bytes;
         let cluster = self.acquire_cluster(normalize_cluster_id(params.cluster.as_deref()))?;
         let context = self.build_context(cluster.clone());
         ensure_master(&context, &self.remote_user).await?;
         let manager = SessionManager::new(context);
-        let cluster_id = cluster.id.clone();
-        let log_peer = peer.clone();
         let result = manager
             .exec(
                 &params.name,
@@ -281,28 +266,6 @@ impl McpServer {
                 params.cwd.as_deref(),
                 &params.env,
                 params.timeout_s.map(Duration::from_secs),
-                |chunk| {
-                    if chunk.is_empty() {
-                        return Ok(());
-                    }
-                    let text = chunk.to_string();
-                    let data = json!({
-                        "cluster": cluster_id.clone(),
-                        "stream": "tmux",
-                        "text": text,
-                    });
-                    let logger = format!("session_exec.{}", params.name);
-                    let peer_clone = log_peer.clone();
-                    tokio::spawn(async move {
-                        let _ = peer_clone
-                            .notify_logging_message(
-                                LoggingMessageNotificationParam::new(LoggingLevel::Info, data)
-                                    .with_logger(logger),
-                            )
-                            .await;
-                    });
-                    Ok(())
-                },
             )
             .await
             .map_err(|failure| ToolFailure(ExecResponse::from(failure).capped(limit)))?;
@@ -431,7 +394,6 @@ impl rmcp::ServerHandler for McpServer {
                 .enable_tools()
                 .enable_prompts()
                 .enable_resources()
-                .enable_logging()
                 .build(),
         )
         .with_server_info(
@@ -846,6 +808,57 @@ impl<T: Serialize> IntoCallToolResult for ToolFailure<T> {
             rmcp::ErrorData::internal_error(format!("Failed to serialize tool error: {e}"), None)
         })?;
         Ok(CallToolResult::structured_error(value).into())
+    }
+}
+
+/// Sends `notifications/progress` while shell_exec output arrives, when the
+/// request carried a progressToken. Throttled to one notification a second;
+/// a single forwarding task keeps them in order.
+struct OutputProgress {
+    tx: mpsc::UnboundedSender<u64>,
+    task: JoinHandle<()>,
+    bytes: u64,
+    last_sent: Option<Instant>,
+}
+
+impl OutputProgress {
+    fn start(request: &RequestContext<RoleServer>) -> Option<Self> {
+        let token = request.meta.get_progress_token()?;
+        let peer = request.peer.clone();
+        let (tx, mut rx) = mpsc::unbounded_channel::<u64>();
+        let task = tokio::spawn(async move {
+            while let Some(bytes) = rx.recv().await {
+                let param = ProgressNotificationParam::new(token.clone(), bytes as f64)
+                    .with_message(format!("{bytes} bytes of output received"));
+                let _ = peer.notify_progress(param).await;
+            }
+        });
+        Some(Self {
+            tx,
+            task,
+            bytes: 0,
+            last_sent: None,
+        })
+    }
+
+    fn record(&mut self, len: usize) {
+        if len == 0 {
+            return;
+        }
+        self.bytes += len as u64;
+        if self
+            .last_sent
+            .is_none_or(|sent| sent.elapsed() >= Duration::from_secs(1))
+        {
+            self.last_sent = Some(Instant::now());
+            let _ = self.tx.send(self.bytes);
+        }
+    }
+
+    /// Flush pending notifications so none arrive after the tool result.
+    async fn finish(self) {
+        drop(self.tx);
+        let _ = self.task.await;
     }
 }
 
