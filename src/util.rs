@@ -8,17 +8,23 @@ use shell_escape::escape;
 
 use crate::errors::{AppError, AppResult};
 
+/// The local user's home directory ($HOME on Unix, the user profile on Windows).
+pub fn home_dir() -> AppResult<PathBuf> {
+    env::home_dir()
+        .filter(|p| !p.as_os_str().is_empty())
+        .ok_or_else(|| AppError::Io("cannot determine home directory".into()))
+}
+
 pub fn expand_path(input: &str) -> AppResult<PathBuf> {
-    if input.starts_with("~/") || input == "~" {
-        let home = env::var("HOME").map_err(|e| AppError::Io(format!("HOME not set: {e}")))?;
-        let trimmed = if input == "~" { "" } else { &input[2..] };
-        if trimmed.is_empty() {
-            Ok(PathBuf::from(home))
-        } else {
-            Ok(Path::new(&home).join(trimmed))
-        }
-    } else {
-        Ok(PathBuf::from(input))
+    if input == "~" {
+        return home_dir();
+    }
+    match input
+        .strip_prefix("~/")
+        .or_else(|| input.strip_prefix("~\\"))
+    {
+        Some(rest) => Ok(home_dir()?.join(Path::new(rest))),
+        None => Ok(PathBuf::from(input)),
     }
 }
 
@@ -75,9 +81,12 @@ mod tests {
         for key in ["", "1BAD", "BAD;echo", "A=B"] {
             assert!(validate_env(&[(key.into(), "x".into())].into()).is_err());
         }
+        let home = std::env::home_dir().unwrap();
+        assert_eq!(expand_path("~").unwrap(), home);
+        assert_eq!(expand_path("~/a/b").unwrap(), home.join("a").join("b"));
         assert_eq!(
-            expand_path("~").unwrap(),
-            std::path::PathBuf::from(std::env::var("HOME").unwrap())
+            expand_path("/abs").unwrap(),
+            std::path::PathBuf::from("/abs")
         );
     }
 

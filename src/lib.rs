@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
@@ -142,8 +142,8 @@ fn resolve_config_path(cli_path: Option<PathBuf>) -> AppResult<PathBuf> {
 }
 
 fn default_config_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    Path::new(&home).join(".gwu-hpc-mcp").join("config.toml")
+    let home = crate::util::home_dir().unwrap_or_else(|_| PathBuf::from("."));
+    home.join(".gwu-hpc-mcp").join("config.toml")
 }
 
 fn resolve_remote_user(cli_user: Option<String>) -> AppResult<String> {
@@ -153,7 +153,9 @@ fn resolve_remote_user(cli_user: Option<String>) -> AppResult<String> {
     if let Ok(env_user) = std::env::var("GWU_HPC_MCP_USER") {
         return Ok(env_user);
     }
+    // USERNAME is the Windows equivalent of USER.
     std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
         .map_err(|_| AppError::InvalidInput("Unable to determine remote user".to_string()))
 }
 
