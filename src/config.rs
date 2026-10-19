@@ -49,7 +49,7 @@ pub struct Defaults {
 
 impl Defaults {
     const fn default_pty() -> bool {
-        true
+        false
     }
 
     const fn default_login_shell() -> bool {

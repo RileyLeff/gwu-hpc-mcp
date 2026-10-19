@@ -32,6 +32,7 @@ If the connection is missing, stale, or drops during a command:
 
 Multiple MCP clients can share the cluster connection. Use distinct tmux session
 names per task. Do not drive, close, or interrupt another client's sessions.
-Prefer `pty=false` for noninteractive shell commands and pass explicit timeouts.
+`shell_exec` runs without a PTY by default; pass `pty=true` only for programs that
+need a terminal. Pass explicit timeouts for anything longer than two minutes.
 Use the configured scratch directory and Slurm for compute; inspect live resource
 metadata before choosing a partition or GPU type. See `hpc_describe` for policies.

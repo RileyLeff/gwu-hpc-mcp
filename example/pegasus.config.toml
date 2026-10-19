@@ -3,7 +3,7 @@
 version = 1
 
 [defaults]
-pty = true
+pty = false
 login_shell = true
 max_concurrent_execs = 4
 warn_on_login_compute = true

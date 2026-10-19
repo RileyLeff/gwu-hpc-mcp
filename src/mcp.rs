@@ -548,8 +548,9 @@ pub struct ShellExecParams {
     /// identifiers (letters, digits, underscore; not starting with a digit).
     #[serde(default)]
     pub env: HashMap<String, String>,
-    /// Allocate a pseudo-terminal. false keeps stdout and stderr separate; true
-    /// merges them into one "pty" stream. Defaults to [defaults].pty.
+    /// Allocate a pseudo-terminal, only for programs that need one. false keeps
+    /// stdout and stderr separate; true merges them into one "pty" stream.
+    /// Defaults to [defaults].pty (false).
     pub pty: Option<bool>,
     /// Run under a login shell so profile and module setup is loaded. Defaults
     /// to [defaults].login_shell.
