@@ -109,11 +109,17 @@ impl McpServer {
         let context = self.build_context(cluster);
         let _permit = self.acquire_permit().await?;
         ensure_master(&context, &self.remote_user).await?;
-        let result = ssh::exec_with_input(&context, request, input).await?;
-        Ok(Json(ExecResponse::completed(
-            result,
-            vec!["Create-only upload; file contents were not executed.".into()],
-        )))
+        let limit = snapshot.config.defaults.max_output_bytes;
+        match ssh::exec_with_input(&context, request, input).await {
+            Ok(result) => Ok(Json(
+                ExecResponse::completed(
+                    result,
+                    vec!["Create-only upload; file contents were not executed.".into()],
+                )
+                .capped(limit),
+            )),
+            Err(failure) => Err(ToolFailure(ExecResponse::from(failure).capped(limit))),
+        }
     }
 
     #[tool(
@@ -206,7 +212,11 @@ impl McpServer {
 
         let exec_result = ssh::exec(&context, exec_request, &mut log_closure).await;
         drop(permit);
-        Ok(Json(ExecResponse::completed(exec_result?, status)))
+        let limit = snapshot.config.defaults.max_output_bytes;
+        match exec_result {
+            Ok(result) => Ok(Json(ExecResponse::completed(result, status).capped(limit))),
+            Err(failure) => Err(ToolFailure(ExecResponse::from(failure).capped(limit))),
+        }
     }
 
     #[tool(
@@ -257,6 +267,7 @@ impl McpServer {
         Parameters(params): Parameters<SessionExecParams>,
         peer: rmcp::service::Peer<rmcp::RoleServer>,
     ) -> Result<Json<ExecResponse>, ToolFailure<ExecResponse>> {
+        let limit = self.snapshot().config.defaults.max_output_bytes;
         let cluster = self.acquire_cluster(normalize_cluster_id(params.cluster.as_deref()))?;
         let context = self.build_context(cluster.clone());
         ensure_master(&context, &self.remote_user).await?;
@@ -293,15 +304,18 @@ impl McpServer {
                     Ok(())
                 },
             )
-            .await?;
-        Ok(Json(ExecResponse {
-            ok: result.exit_code == 0,
-            exit_code: Some(result.exit_code),
-            duration_ms: result.duration.as_millis() as u64,
-            streams: HashMap::from([("tmux".to_string(), result.output)]),
-            tail: result.tail,
-            ..Default::default()
-        }))
+            .await
+            .map_err(|failure| ToolFailure(ExecResponse::from(failure).capped(limit)))?;
+        Ok(Json(
+            ExecResponse {
+                ok: result.exit_code == 0,
+                exit_code: Some(result.exit_code),
+                duration_ms: result.duration.as_millis() as u64,
+                streams: HashMap::from([("tmux".to_string(), result.output)]),
+                ..Default::default()
+            }
+            .capped(limit),
+        ))
     }
 
     #[tool(
@@ -347,7 +361,7 @@ impl McpServer {
     pub async fn hpc_describe(
         &self,
         Parameters(params): Parameters<ClusterScopedParams>,
-    ) -> Result<Json<HpcDescribeResponse>, ToolFailure<HpcDescribeResponse>> {
+    ) -> Result<String, ToolFailure<ToolErrorInfo>> {
         let snapshot = self.snapshot();
         let cluster = self.acquire_cluster(normalize_cluster_id(params.cluster.as_deref()))?;
         let resources = render_resources(&cluster);
@@ -358,13 +372,9 @@ impl McpServer {
             resources,
         };
 
-        let details_toml = toml::to_string_pretty(&output)
+        let details = toml::to_string_pretty(&output)
             .map_err(|e| AppError::Io(format!("Failed to serialize describe output: {e}")))?;
-
-        Ok(Json(HpcDescribeResponse {
-            details_toml,
-            error: None,
-        }))
+        Ok(details)
     }
 
     #[tool(
@@ -586,7 +596,9 @@ pub struct ExecResponse {
     /// Output by stream: "stdout" and "stderr", or one merged "pty" or "tmux"
     /// stream. After a failure this holds whatever was captured before it.
     pub streams: HashMap<String, String>,
-    pub tail: String,
+    /// True when a stream exceeded [defaults].max_output_bytes; its start and
+    /// end are kept around an omission marker.
+    pub truncated: bool,
     /// Advisory notes, such as a warning that the command looks like compute
     /// work that belongs in Slurm.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -603,11 +615,37 @@ impl ExecResponse {
             exit_code: Some(result.exit_code),
             duration_ms: result.duration.as_millis() as u64,
             streams: lossy_streams(result.streams),
-            tail: result.tail,
             status,
-            error: None,
+            ..Default::default()
         }
     }
+
+    /// Cap each stream at `limit` bytes, keeping its head and tail.
+    fn capped(mut self, limit: usize) -> Self {
+        for text in self.streams.values_mut() {
+            if let Some(kept) = head_and_tail(text, limit) {
+                *text = kept;
+                self.truncated = true;
+            }
+        }
+        self
+    }
+}
+
+/// Returns `text` cut to about `limit` bytes, keeping the first and last
+/// halves on char boundaries, or None when it already fits.
+fn head_and_tail(text: &str, limit: usize) -> Option<String> {
+    if text.len() <= limit {
+        return None;
+    }
+    let head = text.floor_char_boundary(limit / 2);
+    let tail = text.ceil_char_boundary(text.len() - limit / 2);
+    let omitted = tail - head;
+    Some(format!(
+        "{}\n[... {omitted} bytes omitted ...]\n{}",
+        &text[..head],
+        &text[tail..]
+    ))
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -681,14 +719,6 @@ pub struct HpcDescribeOutput {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
-pub struct HpcDescribeResponse {
-    pub details_toml: String,
-    /// Why the call failed; present only on error results.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<ToolErrorInfo>,
-}
-
-#[derive(Debug, Serialize, JsonSchema)]
 pub struct HealthCheckResponse {
     pub master_state: String,
     pub control_path: String,
@@ -755,12 +785,9 @@ impl ToolOutput for SessionResponse {
     }
 }
 
-impl ToolOutput for HpcDescribeResponse {
+impl ToolOutput for ToolErrorInfo {
     fn failed(error: ToolErrorInfo) -> Self {
-        Self {
-            details_toml: String::new(),
-            error: Some(error),
-        }
+        error
     }
 }
 
@@ -793,25 +820,23 @@ impl<T: ToolOutput> From<AppError> for ToolFailure<T> {
     }
 }
 
-impl From<ExecFailure> for ToolFailure<ExecResponse> {
+impl From<ExecFailure> for ExecResponse {
     fn from(failure: ExecFailure) -> Self {
-        Self(ExecResponse {
+        Self {
             duration_ms: failure.duration.as_millis() as u64,
             streams: lossy_streams(failure.streams),
-            tail: failure.tail,
-            ..ExecResponse::failed(failure.error.into())
-        })
+            ..Self::failed(failure.error.into())
+        }
     }
 }
 
-impl From<SessionExecFailure> for ToolFailure<ExecResponse> {
+impl From<SessionExecFailure> for ExecResponse {
     fn from(failure: SessionExecFailure) -> Self {
-        Self(ExecResponse {
+        Self {
             duration_ms: failure.duration.as_millis() as u64,
             streams: HashMap::from([("tmux".to_string(), failure.output)]),
-            tail: failure.tail,
-            ..ExecResponse::failed(failure.error.into())
-        })
+            ..Self::failed(failure.error.into())
+        }
     }
 }
 
@@ -913,7 +938,7 @@ mod tests {
             streams: HashMap::from([("stdout".to_string(), b"partial".to_vec())]),
             tail: "partial".into(),
         };
-        let response = ToolFailure::<ExecResponse>::from(failure)
+        let response = ToolFailure(ExecResponse::from(failure))
             .into_call_tool_result()
             .expect("tool failures are results, not protocol errors");
         let CallToolResponse::Complete(result) = response else {
@@ -925,6 +950,26 @@ mod tests {
         assert_eq!(value["error"]["code"], "Timeout");
         assert_eq!(value["streams"]["stdout"], "partial");
         assert!(value["exit_code"].is_null());
+    }
+
+    #[test]
+    fn capped_streams_keep_head_and_tail() {
+        let text = format!("{}{}{}", "a".repeat(100), "中".repeat(100), "z".repeat(100));
+        let response = ExecResponse {
+            streams: HashMap::from([
+                ("stdout".to_string(), text),
+                ("stderr".to_string(), "short".to_string()),
+            ]),
+            ..Default::default()
+        }
+        .capped(64);
+        assert!(response.truncated);
+        let stdout = &response.streams["stdout"];
+        assert!(stdout.starts_with(&"a".repeat(32)));
+        assert!(stdout.ends_with(&"z".repeat(32)));
+        assert!(stdout.contains("bytes omitted"));
+        assert_eq!(response.streams["stderr"], "short");
+        assert!(!ExecResponse::default().capped(64).truncated);
     }
 
     #[test]

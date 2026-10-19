@@ -39,6 +39,9 @@ pub struct Defaults {
     /// Bounded root for create-only source uploads; falls back to default_cwd.
     #[serde(default)]
     pub upload_root: Option<String>,
+    /// Per-stream cap on command output returned to MCP clients.
+    #[serde(default = "Defaults::default_max_output_bytes")]
+    pub max_output_bytes: usize,
 }
 
 impl Defaults {
@@ -57,6 +60,10 @@ impl Defaults {
     const fn default_warn_on_login_compute() -> bool {
         true
     }
+
+    const fn default_max_output_bytes() -> usize {
+        32 * 1024
+    }
 }
 
 impl Default for Defaults {
@@ -69,6 +76,7 @@ impl Default for Defaults {
             default_cluster: None,
             default_cwd: None,
             upload_root: None,
+            max_output_bytes: Self::default_max_output_bytes(),
         }
     }
 }

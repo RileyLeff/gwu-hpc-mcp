@@ -48,7 +48,8 @@ class Client:
         if 'error' in response: raise RuntimeError(response['error'])
         result = response['result']
         if result.get('isError'): raise RuntimeError(result)
-        return result.get('structuredContent') or json.loads(result['content'][0]['text'])
+        if 'structuredContent' in result: return result['structuredContent']
+        return result['content'][0]['text']
 
     def close(self):
         self.proc.stdin.close()

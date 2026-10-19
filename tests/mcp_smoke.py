@@ -53,7 +53,9 @@ with tempfile.TemporaryDirectory(prefix='ghm-smoke-') as temp:
         def tool(tool_name, **params):
             result = send('tools/call', {'name': tool_name, 'arguments': params})
             assert not result.get('isError'), result
-            return result.get('structuredContent') or json.loads(result['content'][0]['text'])
+            if 'structuredContent' in result:
+                return result['structuredContent']
+            return result['content'][0]['text']
         def expected_error(tool_name, **params):
             result = send('tools/call', {'name': tool_name, 'arguments': params})
             assert result.get('isError') and result['structuredContent']['error']['code'] == 'Timeout', result
@@ -65,7 +67,7 @@ with tempfile.TemporaryDirectory(prefix='ghm-smoke-') as temp:
                                       'clientInfo': {'name': 'ghm-smoke', 'version': '1'}})
             send('notifications/initialized', {}, request=False)
             assert tool('health_check')['master_state'] == 'Running'
-            tool('hpc_describe')
+            assert '[cluster]' in tool('hpc_describe')
             print('PASS protocol handshake, health, describe', flush=True)
             # Trigger a real tracing message: it must never enter protocol stdout.
             config.write_text(config.read_text() + '\n# smoke reload\n')
@@ -87,8 +89,9 @@ with tempfile.TemporaryDirectory(prefix='ghm-smoke-') as temp:
             assert r['ok'] is False and r['exit_code'] == 7 and r['streams']['tmux'] == 'quoted 中文 🦀', r
             command = "printf '\\033[2J'; for i in {1..2000}; do printf 'line-%s 中文 🦀\\n' \"$i\"; done"
             r = tool('session_exec', name=session, command=command, timeout_s=10)
-            assert r['ok'] and r['streams']['tmux'].count('\n') == 2000, str(r)[:200]
-            assert 'line-2000 中文 🦀' in r['streams']['tmux']
+            # ~43 KB exceeds the default 32 KiB cap: head and tail survive.
+            assert r['ok'] and r['truncated'], str(r)[:200]
+            assert 'line-1 中文 🦀' in r['streams']['tmux'] and 'line-2000 中文 🦀' in r['streams']['tmux']
             r = tool('session_exec', name=session, command='printf SHOULD_NOT_RUN; printf ALSO_NOT_RUN', cwd='/nonexistent-ghm-smoke', timeout_s=10)
             assert not r['ok'] and 'SHOULD_NOT_RUN' not in r['streams']['tmux'], r
             print('PASS tmux nonzero exit, Unicode, clearing, large output, invalid cwd', flush=True)

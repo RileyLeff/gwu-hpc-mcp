@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::errors::{AppError, AppResult};
 use crate::ssh::{self, ExecFailure, ExecRequest, ExecResult, SshContext};
-use crate::util::{TailBuffer, escape_for_shell, format_duration};
+use crate::util::{escape_for_shell, format_duration};
 
 pub struct SessionManager {
     context: SshContext,
@@ -138,22 +138,18 @@ impl SessionManager {
         )
         .await;
         let output = String::from_utf8_lossy(&bytes).into_owned();
-        let mut tail = TailBuffer::new(4096);
-        tail.push(&bytes);
         on_chunk(&output).map_err(|e| SessionExecFailure::from_error(e, start.elapsed()))?;
         if exit_code == 124 || exit_code == 137 {
             return Err(SessionExecFailure {
                 error: AppError::SshTimeout(limit),
                 duration: start.elapsed(),
                 output,
-                tail: tail.to_lossy_string(),
             });
         }
         Ok(SessionExecResult {
             exit_code,
             duration: start.elapsed(),
             output,
-            tail: tail.to_lossy_string(),
         })
     }
 }
@@ -163,7 +159,6 @@ pub struct SessionExecResult {
     pub exit_code: i32,
     pub duration: Duration,
     pub output: String,
-    pub tail: String,
 }
 
 #[derive(Debug)]
@@ -171,7 +166,6 @@ pub struct SessionExecFailure {
     pub error: AppError,
     pub duration: Duration,
     pub output: String,
-    pub tail: String,
 }
 
 impl SessionExecFailure {
@@ -180,7 +174,6 @@ impl SessionExecFailure {
             error,
             duration,
             output: String::new(),
-            tail: String::new(),
         }
     }
 }
