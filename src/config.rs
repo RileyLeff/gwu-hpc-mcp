@@ -39,6 +39,9 @@ pub struct Defaults {
     /// Bounded root for create-only source uploads; falls back to default_cwd.
     #[serde(default)]
     pub upload_root: Option<String>,
+    /// shell_exec timeout when a call passes no timeout_s.
+    #[serde(default = "Defaults::default_exec_timeout_s")]
+    pub exec_timeout_s: u64,
     /// Per-stream cap on command output returned to MCP clients.
     #[serde(default = "Defaults::default_max_output_bytes")]
     pub max_output_bytes: usize,
@@ -61,6 +64,10 @@ impl Defaults {
         true
     }
 
+    const fn default_exec_timeout_s() -> u64 {
+        120
+    }
+
     const fn default_max_output_bytes() -> usize {
         32 * 1024
     }
@@ -76,6 +83,7 @@ impl Default for Defaults {
             default_cluster: None,
             default_cwd: None,
             upload_root: None,
+            exec_timeout_s: Self::default_exec_timeout_s(),
             max_output_bytes: Self::default_max_output_bytes(),
         }
     }

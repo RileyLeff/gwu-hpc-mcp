@@ -139,7 +139,8 @@ impl McpServer {
             pty=false keeps stdout and stderr as separate streams; pty=true merges them into one \"pty\" stream. \
             ok is true only when exit_code is 0. \
             Login nodes are shared: submit compute-heavy or long-running work through Slurm (sbatch) instead of running it here. \
-            A timeout stops the local SSH client; it does not cancel Slurm jobs already submitted (use scancel). \
+            Times out after timeout_s seconds (default 120, [defaults].exec_timeout_s); cancelling the request also stops it. \
+            Either way only the local SSH client is stopped: Slurm jobs already submitted keep running (use scancel). \
             A heuristic denylist rejects some dangerous commands. Read hpc_describe before remote work."
     )]
     pub async fn shell_exec(
@@ -149,6 +150,14 @@ impl McpServer {
     ) -> Result<Json<ExecResponse>, ToolFailure<ExecResponse>> {
         crate::util::validate_env(&params.env)?;
         let snapshot = self.snapshot();
+        let timeout_s = params
+            .timeout_s
+            .unwrap_or(snapshot.config.defaults.exec_timeout_s);
+        if timeout_s == 0 {
+            return Err(
+                AppError::InvalidInput("timeout_s must be greater than zero".into()).into(),
+            );
+        }
         let cluster = self.acquire_cluster(normalize_cluster_id(params.cluster.as_deref()))?;
         let context = self.build_context(cluster.clone());
         let permit = self.acquire_permit().await?;
@@ -187,19 +196,26 @@ impl McpServer {
             login_shell: params
                 .login_shell
                 .unwrap_or(snapshot.config.defaults.login_shell),
-            timeout: params.timeout_s.map(Duration::from_secs),
+            timeout: Some(Duration::from_secs(timeout_s)),
         };
         let mut progress = OutputProgress::start(&request);
-        let exec_result = ssh::exec(&context, exec_request, |_, chunk: &[u8]| {
-            if let Some(progress) = progress.as_mut() {
-                progress.record(chunk.len());
-            }
-        })
-        .await;
+        // Dropping the exec future on cancellation kills the local ssh child
+        // (kill_on_drop), which closes the remote channel.
+        let exec_result = tokio::select! {
+            result = ssh::exec(&context, exec_request, |_, chunk: &[u8]| {
+                if let Some(progress) = progress.as_mut() {
+                    progress.record(chunk.len());
+                }
+            }) => Some(result),
+            _ = request.ct.cancelled() => None,
+        };
         drop(permit);
         if let Some(progress) = progress {
             progress.finish().await;
         }
+        let Some(exec_result) = exec_result else {
+            return Err(AppError::Cancelled.into());
+        };
         let limit = snapshot.config.defaults.max_output_bytes;
         match exec_result {
             Ok(result) => Ok(Json(ExecResponse::completed(result, status).capped(limit))),
@@ -538,8 +554,9 @@ pub struct ShellExecParams {
     /// Run under a login shell so profile and module setup is loaded. Defaults
     /// to [defaults].login_shell.
     pub login_shell: Option<bool>,
-    /// Seconds before the local SSH client is killed. Does not cancel Slurm
-    /// jobs the command already submitted.
+    /// Seconds before the local SSH client is killed; defaults to
+    /// [defaults].exec_timeout_s (120). Does not cancel Slurm jobs the command
+    /// already submitted.
     pub timeout_s: Option<u64>,
     /// Cluster id from the config; omit to use the default cluster.
     pub cluster: Option<String>,

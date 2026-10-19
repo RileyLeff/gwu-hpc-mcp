@@ -31,6 +31,8 @@ pub enum AppError {
     Io(String),
     #[error("Invalid input: {0}")]
     InvalidInput(String),
+    #[error("Request cancelled by the client")]
+    Cancelled,
 }
 
 impl AppError {
@@ -47,6 +49,7 @@ impl AppError {
             AppError::Config(_) => "ConfigError",
             AppError::Io(_) => "IoError",
             AppError::InvalidInput(_) => "InvalidInput",
+            AppError::Cancelled => "Cancelled",
         }
     }
 }

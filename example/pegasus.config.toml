@@ -7,6 +7,7 @@ pty = true
 login_shell = true
 max_concurrent_execs = 4
 warn_on_login_compute = true
+exec_timeout_s = 120
 max_output_bytes = 32768
 default_cluster = "pegasus"
 # Set default_cwd to your actual /scratch/<group>/<user> directory.
