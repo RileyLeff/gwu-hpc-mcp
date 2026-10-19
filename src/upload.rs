@@ -15,6 +15,7 @@ const MAX_BYTES: usize = 8 * 1024 * 1024;
 pub struct TextFile {
     /// Flat filename; no slashes, traversal or shell syntax.
     pub name: String,
+    /// Exact UTF-8 file contents.
     pub content: String,
     /// Required lowercase SHA-256 of the exact UTF-8 content.
     pub sha256: String,
@@ -22,8 +23,10 @@ pub struct TextFile {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct UploadTextBundleParams {
+    /// Cluster id from the config; omit to use the default cluster.
     pub cluster: Option<String>,
-    /// New directory relative to configured default_cwd. Parent must exist.
+    /// New directory relative to [defaults].upload_root (or default_cwd). It must
+    /// not exist yet; its parent must.
     pub directory: String,
     /// Up to 128 files and 8 MiB of serialized JSON. Created mode 0600.
     pub files: Vec<TextFile>,

@@ -145,7 +145,13 @@ impl McpServer {
             idempotent_hint = false,
             open_world_hint = true
         ),
-        description = "Execute a command on the remote cluster via SSH ControlMaster."
+        description = "Run one shell command on a cluster login node over the user's authenticated SSH connection and return its exit code and output. \
+            Each call starts a fresh shell: cd, exports and variables do not persist, so pass cwd and env instead. \
+            pty=false keeps stdout and stderr as separate streams; pty=true merges them into one \"pty\" stream. \
+            ok is true only when exit_code is 0. \
+            Login nodes are shared: submit compute-heavy or long-running work through Slurm (sbatch) instead of running it here. \
+            A timeout stops the local SSH client; it does not cancel Slurm jobs already submitted (use scancel). \
+            A heuristic denylist rejects some dangerous commands. Read hpc_describe before remote work."
     )]
     pub async fn shell_exec(
         &self,
@@ -255,7 +261,8 @@ impl McpServer {
             idempotent_hint = false,
             open_world_hint = false
         ),
-        description = "Open a tmux-backed session on the cluster."
+        description = "Open a named, detached tmux session on the cluster for a series of session_exec calls. \
+            Fails if a session with that name already exists. Use a distinct name per task and never drive or close another client's sessions."
     )]
     pub async fn session_open(
         &self,
@@ -290,7 +297,11 @@ impl McpServer {
             idempotent_hint = false,
             open_world_hint = true
         ),
-        description = "Execute a command inside an existing tmux session."
+        description = "Run a command inside an existing tmux session (see session_open) and wait for it to finish. \
+            Each command runs in a fresh login Bash child: cd, exports and shell variables do NOT persist between calls, so pass cwd and env every time. \
+            stdout and stderr are merged into one \"tmux\" stream, buffered in private remote temp files and returned on completion. \
+            Defaults to a 300-second timeout; exit codes 124/137 mean the command timed out. Commands to the same session run one at a time. \
+            Submit compute-heavy or long-running work through Slurm (sbatch) instead of running it on the login node."
     )]
     pub async fn session_exec(
         &self,
@@ -360,7 +371,7 @@ impl McpServer {
             idempotent_hint = false,
             open_world_hint = false
         ),
-        description = "Close a tmux session on the cluster."
+        description = "Kill a tmux session and any process still running in it. Only close sessions this client opened."
     )]
     pub async fn session_close(
         &self,
@@ -392,7 +403,9 @@ impl McpServer {
             idempotent_hint = true,
             open_world_hint = false
         ),
-        description = "CRITICAL: Provides essential details on cluster policies, filesystem best practices, Slurm partitions, and module loading guidance. Agents MUST call and interpret its output before submitting jobs, moving data, or configuring environments to ensure compliance and efficiency."
+        description = "Return the configured policy, filesystem guidance, Slurm partitions and module-loading notes for a cluster. \
+            Read it before submitting jobs, moving data or setting up environments. \
+            It is a configured snapshot: verify current resources with sinfo or scontrol."
     )]
     pub async fn hpc_describe(
         &self,
@@ -429,7 +442,9 @@ impl McpServer {
             idempotent_hint = true,
             open_world_hint = false
         ),
-        description = "Report ControlMaster status for a cluster."
+        description = "Report whether the user's local SSH ControlMaster (the authenticated cluster connection) is Running, Missing or Stale. \
+            It does not contact the cluster; run a harmless shell_exec such as `hostname` to confirm end-to-end access. \
+            If it is not Running, ask the user to reconnect with `ghm up` in their own terminal. Never guess, request or submit 2FA codes."
     )]
     pub async fn health_check(
         &self,
@@ -603,13 +618,25 @@ pub async fn run_stdio(config: ConfigManager, remote_user: String) -> AppResult<
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ShellExecParams {
+    /// Shell command line, run by bash on the cluster login node.
     pub command: String,
+    /// Remote working directory; defaults to [defaults].default_cwd. The command
+    /// does not run if this directory cannot be entered.
     pub cwd: Option<String>,
+    /// Extra environment variables for this command only. Names must be shell
+    /// identifiers (letters, digits, underscore; not starting with a digit).
     #[serde(default)]
     pub env: HashMap<String, String>,
+    /// Allocate a pseudo-terminal. false keeps stdout and stderr separate; true
+    /// merges them into one "pty" stream. Defaults to [defaults].pty.
     pub pty: Option<bool>,
+    /// Run under a login shell so profile and module setup is loaded. Defaults
+    /// to [defaults].login_shell.
     pub login_shell: Option<bool>,
+    /// Seconds before the local SSH client is killed. Does not cancel Slurm
+    /// jobs the command already submitted.
     pub timeout_s: Option<u64>,
+    /// Cluster id from the config; omit to use the default cluster.
     pub cluster: Option<String>,
 }
 
@@ -626,30 +653,45 @@ pub struct ShellExecResponse {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SessionOpenParams {
+    /// New tmux session name: letters, digits, '_' or '-'. Use a distinct name
+    /// per task.
     pub name: String,
+    /// Starting directory for the session's shell.
     pub cwd: Option<String>,
+    /// Cluster id from the config; omit to use the default cluster.
     pub cluster: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SessionExecParams {
+    /// Name of a session previously opened with session_open.
     pub name: String,
+    /// Command run by a fresh login Bash child; shell state does not persist
+    /// between calls.
     pub command: String,
+    /// Working directory for this command; pass it on every call.
     pub cwd: Option<String>,
+    /// Environment variables for this command only; pass them on every call.
     #[serde(default)]
     pub env: HashMap<String, String>,
+    /// Seconds before GNU timeout terminates the command's process group.
+    /// Defaults to 300; must be greater than zero.
     pub timeout_s: Option<u64>,
+    /// Cluster id from the config; omit to use the default cluster.
     pub cluster: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SessionCloseParams {
+    /// Name of a session this client opened with session_open.
     pub name: String,
+    /// Cluster id from the config; omit to use the default cluster.
     pub cluster: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ClusterScopedParams {
+    /// Cluster id from the config; omit to use the default cluster.
     pub cluster: Option<String>,
 }
 
