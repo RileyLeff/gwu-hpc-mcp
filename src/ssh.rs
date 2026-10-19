@@ -599,7 +599,8 @@ fn spawn_stream_pump(
     })
 }
 
-#[cfg(test)]
+// Runs the remote command locally with bash.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     #[test]
