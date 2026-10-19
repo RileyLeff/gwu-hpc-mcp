@@ -97,7 +97,8 @@ def main():
             for text in ('shutdown', 'reboot', 'mkfs', 'rm -rf /'):
                 denied = client.send('tools/call', dict(name='shell_exec', arguments=dict(
                     cluster='pegasus', command="printf '%s' '" + text + "'", pty=False, timeout_s=5)))
-                assert denied.get('error', {}).get('data', {}).get('code') == 'DeniedByPolicy', denied
+                result = denied['result']
+                assert result.get('isError') and result['structuredContent']['error']['code'] == 'DeniedByPolicy', denied
             directory = 'experiments/ghm-upload-smoke-' + uuid.uuid4().hex[:12]
             content = "raise ValueError('setup/cleanup/final shutdown exceed total')\n$(reboot)\n中文\n"
             params = dict(cluster='pegasus', directory=directory, files=[text_file('data.txt', content)])

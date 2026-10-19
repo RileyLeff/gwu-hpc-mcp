@@ -32,7 +32,7 @@ with tempfile.TemporaryDirectory(prefix='ghm-smoke-') as temp:
                     messages.put(RuntimeError('Non-JSON stdout: ' + line))
         threading.Thread(target=reader, daemon=True).start()
         seq = 0
-        def send(method, params, request=True, allow_error=False):
+        def send(method, params, request=True):
             global seq
             seq += 1
             payload = {'jsonrpc': '2.0', 'method': method, 'params': params}
@@ -48,8 +48,6 @@ with tempfile.TemporaryDirectory(prefix='ghm-smoke-') as temp:
                 if isinstance(msg, Exception):
                     raise msg
                 if msg.get('id') == seq:
-                    if allow_error:
-                        return msg
                     assert 'error' not in msg, msg
                     return msg['result']
         def tool(tool_name, **params):
@@ -57,8 +55,8 @@ with tempfile.TemporaryDirectory(prefix='ghm-smoke-') as temp:
             assert not result.get('isError'), result
             return result.get('structuredContent') or json.loads(result['content'][0]['text'])
         def expected_error(tool_name, **params):
-            result = send('tools/call', {'name': tool_name, 'arguments': params}, allow_error=True)
-            assert result.get('error', {}).get('data', {}).get('code') == 'Timeout', result
+            result = send('tools/call', {'name': tool_name, 'arguments': params})
+            assert result.get('isError') and result['structuredContent']['error']['code'] == 'Timeout', result
             return result
         session = 'mcp_smoke_' + uuid.uuid4().hex[:12]
         opened = False

@@ -5,18 +5,20 @@ use std::time::Duration;
 use rmcp::{
     Json, ServiceExt,
     handler::server::router::tool::ToolRouter,
+    handler::server::tool::IntoCallToolResult,
     handler::server::wrapper::Parameters,
     model::{
-        GetPromptResponse, GetPromptResult, Implementation, ListPromptsResult, ListResourcesResult,
-        LoggingLevel, LoggingMessageNotificationParam, Prompt, PromptMessage, ReadResourceResponse,
-        ReadResourceResult, Resource, ResourceContents, Role, ServerCapabilities, ServerConfig,
+        CallToolResponse, CallToolResult, GetPromptResponse, GetPromptResult, Implementation,
+        ListPromptsResult, ListResourcesResult, LoggingLevel, LoggingMessageNotificationParam,
+        Prompt, PromptMessage, ReadResourceResponse, ReadResourceResult, Resource,
+        ResourceContents, Role, ServerCapabilities, ServerConfig,
     },
     tool, tool_handler, tool_router,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::config::{Cluster, ConfigManager, ConfigSnapshot};
 use crate::errors::{AppError, AppResult};
@@ -57,20 +59,12 @@ impl McpServer {
         SshContext::new(cluster, self.remote_user.clone())
     }
 
-    fn to_shell_response(&self, result: ssh::ExecResult, status: Vec<String>) -> ShellExecResponse {
-        let streams = result
-            .streams
-            .into_iter()
-            .map(|(name, data)| (name, String::from_utf8_lossy(&data).to_string()))
-            .collect();
-        ShellExecResponse {
-            ok: result.exit_code == 0,
-            exit_code: result.exit_code,
-            duration_ms: result.duration.as_millis() as u64,
-            streams,
-            tail: result.tail,
-            status,
-        }
+    async fn acquire_permit(&self) -> AppResult<OwnedSemaphorePermit> {
+        self.concurrency
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| AppError::Io(format!("Failed to acquire execution permit: {e}")))
     }
 }
 
@@ -97,7 +91,7 @@ impl McpServer {
     pub async fn upload_text_bundle(
         &self,
         Parameters(params): Parameters<crate::upload::UploadTextBundleParams>,
-    ) -> Result<Json<ShellExecResponse>, rmcp::ErrorData> {
+    ) -> Result<Json<ExecResponse>, ToolFailure<ExecResponse>> {
         let snapshot = self.snapshot();
         let root = snapshot
             .config
@@ -106,34 +100,20 @@ impl McpServer {
             .as_deref()
             .or(snapshot.config.defaults.default_cwd.as_deref())
             .ok_or_else(|| {
-                to_mcp_error(AppError::InvalidInput(
+                AppError::InvalidInput(
                     "upload requires configured upload_root or project default_cwd".into(),
-                ))
-            })?;
-        let (request, input) = crate::upload::prepare(root, &params).map_err(to_mcp_error)?;
-        let cluster = self
-            .acquire_cluster(normalize_cluster_id(params.cluster.as_deref()))
-            .map_err(to_mcp_error)?;
-        let context = self.build_context(cluster);
-        let _permit = self
-            .concurrency
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|e| {
-                rmcp::ErrorData::internal_error(
-                    "Failed to acquire upload permit",
-                    Some(json!({"error": e.to_string()})),
                 )
             })?;
+        let (request, input) = crate::upload::prepare(root, &params)?;
+        let cluster = self.acquire_cluster(normalize_cluster_id(params.cluster.as_deref()))?;
+        let context = self.build_context(cluster);
+        let _permit = self.acquire_permit().await?;
         ensure_master(&context, &self.remote_user).await?;
-        match ssh::exec_with_input(&context, request, input).await {
-            Ok(result) => Ok(Json(self.to_shell_response(
-                result,
-                vec!["Create-only upload; file contents were not executed.".into()],
-            ))),
-            Err(failure) => Err(exec_failure_to_error("upload_text_bundle", failure)),
-        }
+        let result = ssh::exec_with_input(&context, request, input).await?;
+        Ok(Json(ExecResponse::completed(
+            result,
+            vec!["Create-only upload; file contents were not executed.".into()],
+        )))
     }
 
     #[tool(
@@ -157,32 +137,13 @@ impl McpServer {
         &self,
         Parameters(params): Parameters<ShellExecParams>,
         peer: rmcp::service::Peer<rmcp::RoleServer>,
-    ) -> Result<Json<ShellExecResponse>, rmcp::ErrorData> {
-        crate::util::validate_env(&params.env).map_err(to_mcp_error)?;
+    ) -> Result<Json<ExecResponse>, ToolFailure<ExecResponse>> {
+        crate::util::validate_env(&params.env)?;
         let snapshot = self.snapshot();
-        let cluster = self
-            .acquire_cluster(normalize_cluster_id(params.cluster.as_deref()))
-            .map_err(to_mcp_error)?;
+        let cluster = self.acquire_cluster(normalize_cluster_id(params.cluster.as_deref()))?;
         let context = self.build_context(cluster.clone());
-        let permit = self
-            .concurrency
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|e| {
-                rmcp::ErrorData::internal_error(
-                    "Failed to acquire execution permit",
-                    Some(json!({ "error": e.to_string() })),
-                )
-            })?;
-        let master_state = ssh::check_master(&context).await.map_err(to_mcp_error)?;
-        match master_state {
-            MasterState::Running => {}
-            MasterState::Missing | MasterState::Stale => {
-                drop(permit);
-                return Err(needs_2fa_error(&context, &self.remote_user));
-            }
-        }
+        let permit = self.acquire_permit().await?;
+        ensure_master(&context, &self.remote_user).await?;
 
         if snapshot
             .compiled
@@ -191,8 +152,7 @@ impl McpServer {
             .iter()
             .any(|re| re.is_match(&params.command))
         {
-            drop(permit);
-            return Err(to_mcp_error(AppError::DeniedByPolicy(params.command)));
+            return Err(AppError::DeniedByPolicy(params.command).into());
         }
 
         let mut status = Vec::new();
@@ -246,10 +206,7 @@ impl McpServer {
 
         let exec_result = ssh::exec(&context, exec_request, &mut log_closure).await;
         drop(permit);
-        match exec_result {
-            Ok(result) => Ok(Json(self.to_shell_response(result, status))),
-            Err(failure) => Err(exec_failure_to_error("shell_exec", failure)),
-        }
+        Ok(Json(ExecResponse::completed(exec_result?, status)))
     }
 
     #[tool(
@@ -267,25 +224,17 @@ impl McpServer {
     pub async fn session_open(
         &self,
         Parameters(params): Parameters<SessionOpenParams>,
-    ) -> Result<Json<SessionResponse>, rmcp::ErrorData> {
-        let cluster = self
-            .acquire_cluster(normalize_cluster_id(params.cluster.as_deref()))
-            .map_err(to_mcp_error)?;
+    ) -> Result<Json<SessionResponse>, ToolFailure<SessionResponse>> {
+        let cluster = self.acquire_cluster(normalize_cluster_id(params.cluster.as_deref()))?;
         let context = self.build_context(cluster.clone());
         ensure_master(&context, &self.remote_user).await?;
         let manager = SessionManager::new(context);
-        manager
-            .open(&params.name, params.cwd.as_deref())
-            .await
-            .map_err(to_mcp_error)?;
-        Ok(Json(SessionResponse {
-            ok: true,
-            message: format!(
-                "Session '{}' opened on {}",
-                params.name,
-                cluster.display_name()
-            ),
-        }))
+        manager.open(&params.name, params.cwd.as_deref()).await?;
+        Ok(Json(SessionResponse::done(format!(
+            "Session '{}' opened on {}",
+            params.name,
+            cluster.display_name()
+        ))))
     }
 
     #[tool(
@@ -307,16 +256,14 @@ impl McpServer {
         &self,
         Parameters(params): Parameters<SessionExecParams>,
         peer: rmcp::service::Peer<rmcp::RoleServer>,
-    ) -> Result<Json<SessionExecResponse>, rmcp::ErrorData> {
-        let cluster = self
-            .acquire_cluster(normalize_cluster_id(params.cluster.as_deref()))
-            .map_err(to_mcp_error)?;
+    ) -> Result<Json<ExecResponse>, ToolFailure<ExecResponse>> {
+        let cluster = self.acquire_cluster(normalize_cluster_id(params.cluster.as_deref()))?;
         let context = self.build_context(cluster.clone());
         ensure_master(&context, &self.remote_user).await?;
         let manager = SessionManager::new(context);
         let cluster_id = cluster.id.clone();
         let log_peer = peer.clone();
-        match manager
+        let result = manager
             .exec(
                 &params.name,
                 &params.command,
@@ -346,20 +293,15 @@ impl McpServer {
                     Ok(())
                 },
             )
-            .await
-        {
-            Ok(result) => {
-                let response = SessionExecResponse {
-                    ok: result.exit_code == 0,
-                    exit_code: result.exit_code,
-                    duration_ms: result.duration.as_millis() as u64,
-                    streams: HashMap::from([("tmux".to_string(), result.output)]),
-                    tail: result.tail,
-                };
-                Ok(Json(response))
-            }
-            Err(failure) => Err(session_failure_to_error("session_exec", failure)),
-        }
+            .await?;
+        Ok(Json(ExecResponse {
+            ok: result.exit_code == 0,
+            exit_code: Some(result.exit_code),
+            duration_ms: result.duration.as_millis() as u64,
+            streams: HashMap::from([("tmux".to_string(), result.output)]),
+            tail: result.tail,
+            ..Default::default()
+        }))
     }
 
     #[tool(
@@ -376,22 +318,17 @@ impl McpServer {
     pub async fn session_close(
         &self,
         Parameters(params): Parameters<SessionCloseParams>,
-    ) -> Result<Json<SessionResponse>, rmcp::ErrorData> {
-        let cluster = self
-            .acquire_cluster(normalize_cluster_id(params.cluster.as_deref()))
-            .map_err(to_mcp_error)?;
+    ) -> Result<Json<SessionResponse>, ToolFailure<SessionResponse>> {
+        let cluster = self.acquire_cluster(normalize_cluster_id(params.cluster.as_deref()))?;
         let context = self.build_context(cluster.clone());
         ensure_master(&context, &self.remote_user).await?;
         let manager = SessionManager::new(context);
-        manager.close(&params.name).await.map_err(to_mcp_error)?;
-        Ok(Json(SessionResponse {
-            ok: true,
-            message: format!(
-                "Session '{}' closed on {}",
-                params.name,
-                cluster.display_name()
-            ),
-        }))
+        manager.close(&params.name).await?;
+        Ok(Json(SessionResponse::done(format!(
+            "Session '{}' closed on {}",
+            params.name,
+            cluster.display_name()
+        ))))
     }
 
     #[tool(
@@ -410,11 +347,9 @@ impl McpServer {
     pub async fn hpc_describe(
         &self,
         Parameters(params): Parameters<ClusterScopedParams>,
-    ) -> Result<Json<HpcDescribeResponse>, rmcp::ErrorData> {
+    ) -> Result<Json<HpcDescribeResponse>, ToolFailure<HpcDescribeResponse>> {
         let snapshot = self.snapshot();
-        let cluster = self
-            .acquire_cluster(normalize_cluster_id(params.cluster.as_deref()))
-            .map_err(to_mcp_error)?;
+        let cluster = self.acquire_cluster(normalize_cluster_id(params.cluster.as_deref()))?;
         let resources = render_resources(&cluster);
 
         let output = HpcDescribeOutput {
@@ -423,14 +358,13 @@ impl McpServer {
             resources,
         };
 
-        let details_toml = toml::to_string_pretty(&output).map_err(|e| {
-            rmcp::ErrorData::internal_error(
-                "Failed to serialize describe output to TOML",
-                Some(json!({ "error": e.to_string() })),
-            )
-        })?;
+        let details_toml = toml::to_string_pretty(&output)
+            .map_err(|e| AppError::Io(format!("Failed to serialize describe output: {e}")))?;
 
-        Ok(Json(HpcDescribeResponse { details_toml }))
+        Ok(Json(HpcDescribeResponse {
+            details_toml,
+            error: None,
+        }))
     }
 
     #[tool(
@@ -449,14 +383,12 @@ impl McpServer {
     pub async fn health_check(
         &self,
         Parameters(params): Parameters<ClusterScopedParams>,
-    ) -> Result<Json<HealthCheckResponse>, rmcp::ErrorData> {
+    ) -> Result<Json<HealthCheckResponse>, ToolFailure<HealthCheckResponse>> {
         let snapshot = self.snapshot();
-        let cluster = self
-            .acquire_cluster(normalize_cluster_id(params.cluster.as_deref()))
-            .map_err(to_mcp_error)?;
+        let cluster = self.acquire_cluster(normalize_cluster_id(params.cluster.as_deref()))?;
         let context = self.build_context(cluster.clone());
-        let control_path = context.control_path().map_err(to_mcp_error)?;
-        let state = ssh::check_master(&context).await.map_err(to_mcp_error)?;
+        let control_path = context.control_path()?;
+        let state = ssh::check_master(&context).await?;
         let (state_str, message) = match state {
             MasterState::Running => ("Running".to_string(), None),
             MasterState::Missing => (
@@ -476,6 +408,7 @@ impl McpServer {
             control_path: control_path.to_str().unwrap_or_default().to_string(),
             message,
             config_version: snapshot.version,
+            error: None,
         }))
     }
 }
@@ -640,15 +573,41 @@ pub struct ShellExecParams {
     pub cluster: Option<String>,
 }
 
-#[derive(Debug, Serialize, JsonSchema)]
-pub struct ShellExecResponse {
+/// Result of a remote command. A failed call uses the same shape with `ok`
+/// false and `error` set, so `isError` results still match the output schema.
+#[derive(Debug, Default, Serialize, JsonSchema)]
+pub struct ExecResponse {
+    /// True only when the command ran to completion with exit code 0.
     pub ok: bool,
-    pub exit_code: i32,
+    /// Remote exit status; absent when the command did not run to completion.
+    pub exit_code: Option<i32>,
     #[schemars(with = "i64")]
     pub duration_ms: u64,
+    /// Output by stream: "stdout" and "stderr", or one merged "pty" or "tmux"
+    /// stream. After a failure this holds whatever was captured before it.
     pub streams: HashMap<String, String>,
     pub tail: String,
+    /// Advisory notes, such as a warning that the command looks like compute
+    /// work that belongs in Slurm.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub status: Vec<String>,
+    /// Why the call failed; present only on error results.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<ToolErrorInfo>,
+}
+
+impl ExecResponse {
+    fn completed(result: ssh::ExecResult, status: Vec<String>) -> Self {
+        Self {
+            ok: result.exit_code == 0,
+            exit_code: Some(result.exit_code),
+            duration_ms: result.duration.as_millis() as u64,
+            streams: lossy_streams(result.streams),
+            tail: result.tail,
+            status,
+            error: None,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -699,16 +658,19 @@ pub struct ClusterScopedParams {
 pub struct SessionResponse {
     pub ok: bool,
     pub message: String,
+    /// Why the call failed; present only on error results.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<ToolErrorInfo>,
 }
 
-#[derive(Debug, Serialize, JsonSchema)]
-pub struct SessionExecResponse {
-    pub ok: bool,
-    pub exit_code: i32,
-    #[schemars(with = "i64")]
-    pub duration_ms: u64,
-    pub streams: HashMap<String, String>,
-    pub tail: String,
+impl SessionResponse {
+    fn done(message: String) -> Self {
+        Self {
+            ok: true,
+            message,
+            error: None,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -721,6 +683,9 @@ pub struct HpcDescribeOutput {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct HpcDescribeResponse {
     pub details_toml: String,
+    /// Why the call failed; present only on error results.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<ToolErrorInfo>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -730,88 +695,169 @@ pub struct HealthCheckResponse {
     pub message: Option<String>,
     #[schemars(with = "i64")]
     pub config_version: u64,
+    /// Why the call failed; present only on error results.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<ToolErrorInfo>,
 }
 
-fn to_mcp_error(err: AppError) -> rmcp::ErrorData {
-    error_with_details(err, None)
+/// Machine-readable reason a tool call failed.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ToolErrorInfo {
+    /// Stable code such as InvalidInput, DeniedByPolicy, Needs2FA, Timeout,
+    /// SshSpawn, TmuxError, ConfigError or IoError.
+    pub code: String,
+    pub message: String,
+    /// What to do next, when there is specific guidance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
 }
 
-fn error_with_details(err: AppError, extra: Option<serde_json::Value>) -> rmcp::ErrorData {
-    let code = match err {
-        AppError::InvalidInput(_)
-        | AppError::DeniedByPolicy(_)
-        | AppError::Needs2fa(_)
-        | AppError::MasterDown
-        | AppError::MasterStale
-        | AppError::UnknownSession(_) => rmcp::model::ErrorCode::INVALID_PARAMS,
-        AppError::Config(_) => rmcp::model::ErrorCode::INTERNAL_ERROR,
-        AppError::SshTimeout(_) | AppError::SshSpawn(_) | AppError::Tmux(_) | AppError::Io(_) => {
-            rmcp::model::ErrorCode::INTERNAL_ERROR
+impl From<AppError> for ToolErrorInfo {
+    fn from(err: AppError) -> Self {
+        let hint = match &err {
+            AppError::SshTimeout(_) => Some(
+                "The command was stopped; any Slurm job it submitted keeps running. Check job state with squeue before retrying.",
+            ),
+            AppError::DeniedByPolicy(_) => Some(
+                "The command matched the safety denylist. Do not rephrase it to evade the check; ask the user how to proceed.",
+            ),
+            _ => None,
+        };
+        Self {
+            code: err.code().to_string(),
+            message: err.to_string(),
+            hint: hint.map(String::from),
         }
-    };
-
-    let data = json!({
-        "code": err.code(),
-        "details": extra.unwrap_or(serde_json::Value::Null)
-    });
-
-    rmcp::ErrorData::new(code, err.to_string(), Some(data))
+    }
 }
 
-fn exec_failure_to_error(op: &str, failure: ExecFailure) -> rmcp::ErrorData {
-    let streams = failure
-        .streams
+/// Tool responses that can describe a failed call in their own schema.
+trait ToolOutput: Serialize {
+    fn failed(error: ToolErrorInfo) -> Self;
+}
+
+impl ToolOutput for ExecResponse {
+    fn failed(error: ToolErrorInfo) -> Self {
+        Self {
+            error: Some(error),
+            ..Default::default()
+        }
+    }
+}
+
+impl ToolOutput for SessionResponse {
+    fn failed(error: ToolErrorInfo) -> Self {
+        Self {
+            ok: false,
+            message: error.message.clone(),
+            error: Some(error),
+        }
+    }
+}
+
+impl ToolOutput for HpcDescribeResponse {
+    fn failed(error: ToolErrorInfo) -> Self {
+        Self {
+            details_toml: String::new(),
+            error: Some(error),
+        }
+    }
+}
+
+impl ToolOutput for HealthCheckResponse {
+    fn failed(error: ToolErrorInfo) -> Self {
+        Self {
+            master_state: "Unknown".into(),
+            control_path: String::new(),
+            message: Some(error.message.clone()),
+            config_version: 0,
+            error: Some(error),
+        }
+    }
+}
+
+/// A tool execution failure. It reaches the model as a `CallToolResult` with
+/// `isError: true` and structured content, not as a JSON-RPC error (SEP-1303);
+/// JSON-RPC errors stay reserved for malformed requests.
+pub struct ToolFailure<T>(T);
+
+impl<T: ToolOutput> From<ToolErrorInfo> for ToolFailure<T> {
+    fn from(error: ToolErrorInfo) -> Self {
+        Self(T::failed(error))
+    }
+}
+
+impl<T: ToolOutput> From<AppError> for ToolFailure<T> {
+    fn from(err: AppError) -> Self {
+        ToolErrorInfo::from(err).into()
+    }
+}
+
+impl From<ExecFailure> for ToolFailure<ExecResponse> {
+    fn from(failure: ExecFailure) -> Self {
+        Self(ExecResponse {
+            duration_ms: failure.duration.as_millis() as u64,
+            streams: lossy_streams(failure.streams),
+            tail: failure.tail,
+            ..ExecResponse::failed(failure.error.into())
+        })
+    }
+}
+
+impl From<SessionExecFailure> for ToolFailure<ExecResponse> {
+    fn from(failure: SessionExecFailure) -> Self {
+        Self(ExecResponse {
+            duration_ms: failure.duration.as_millis() as u64,
+            streams: HashMap::from([("tmux".to_string(), failure.output)]),
+            tail: failure.tail,
+            ..ExecResponse::failed(failure.error.into())
+        })
+    }
+}
+
+impl<T: Serialize> IntoCallToolResult for ToolFailure<T> {
+    fn into_call_tool_result(self) -> Result<CallToolResponse, rmcp::ErrorData> {
+        let value = serde_json::to_value(self.0).map_err(|e| {
+            rmcp::ErrorData::internal_error(format!("Failed to serialize tool error: {e}"), None)
+        })?;
+        Ok(CallToolResult::structured_error(value).into())
+    }
+}
+
+fn lossy_streams(streams: HashMap<String, Vec<u8>>) -> HashMap<String, String> {
+    streams
         .into_iter()
-        .map(|(name, data)| (name, String::from_utf8_lossy(&data).to_string()))
-        .collect::<HashMap<_, _>>();
-    let details = json!({
-        "operation": op,
-        "duration_ms": failure.duration.as_millis() as u64,
-        "streams": streams,
-        "tail": failure.tail,
-    });
-    error_with_details(failure.error, Some(details))
+        .map(|(name, data)| (name, String::from_utf8_lossy(&data).into_owned()))
+        .collect()
 }
 
-fn session_failure_to_error(op: &str, failure: SessionExecFailure) -> rmcp::ErrorData {
-    let details = json!({
-        "operation": op,
-        "duration_ms": failure.duration.as_millis() as u64,
-        "output": failure.output,
-        "tail": failure.tail,
-    });
-    error_with_details(failure.error, Some(details))
+/// Protocol-level error for prompt and resource requests.
+fn to_mcp_error(err: AppError) -> rmcp::ErrorData {
+    let code = match err {
+        AppError::InvalidInput(_) | AppError::Config(_) => rmcp::model::ErrorCode::INVALID_PARAMS,
+        _ => rmcp::model::ErrorCode::INTERNAL_ERROR,
+    };
+    rmcp::ErrorData::new(code, err.to_string(), Some(json!({ "code": err.code() })))
 }
 
-async fn ensure_master(context: &SshContext, remote_user: &str) -> Result<(), rmcp::ErrorData> {
-    let state = ssh::check_master(context).await.map_err(to_mcp_error)?;
-    match state {
+async fn ensure_master(context: &SshContext, remote_user: &str) -> Result<(), ToolErrorInfo> {
+    match ssh::check_master(context).await? {
         MasterState::Running => Ok(()),
         MasterState::Missing | MasterState::Stale => Err(needs_2fa_error(context, remote_user)),
     }
 }
 
-fn needs_2fa_error(context: &SshContext, remote_user: &str) -> rmcp::ErrorData {
+fn needs_2fa_error(context: &SshContext, remote_user: &str) -> ToolErrorInfo {
     let cluster_id = &context.cluster.id;
-    let message = format!(
-        "Cluster connection is unavailable for '{cluster_id}'. Tell the user to check GW VPN if off campus and reconnect in their own terminal. Never guess or submit 2FA codes."
-    );
-    let hint = format!(
-        "Ask the user to run: ghm up --cluster {cluster_id} --user {remote_user}. They must complete authentication themselves; do not paste codes into chat."
-    );
-    let data = json!({
-        "cluster": cluster_id,
-        "hint": hint,
-        "control_path": context.control_path().ok().and_then(|p| p.to_str().map(|s| s.to_string()))
-    });
-    rmcp::ErrorData::new(
-        rmcp::model::ErrorCode::INVALID_PARAMS,
-        message,
-        Some(json!({
-            "code": "Needs2FA",
-            "details": data
-        })),
-    )
+    ToolErrorInfo {
+        code: "Needs2FA".into(),
+        message: format!(
+            "Cluster connection is unavailable for '{cluster_id}'. Tell the user to check GW VPN if off campus and reconnect in their own terminal. Never guess or submit 2FA codes."
+        ),
+        hint: Some(format!(
+            "Ask the user to run: ghm up --cluster {cluster_id} --user {remote_user}. They must complete authentication themselves; do not paste codes into chat."
+        )),
+    }
 }
 
 fn build_resource_set(cluster: &Cluster) -> Vec<Resource> {
@@ -857,7 +903,29 @@ fn parse_hpc_uri(uri: &str) -> Option<(String, String)> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_hpc_uri;
+    use super::*;
+
+    #[test]
+    fn exec_failure_becomes_structured_error_result() {
+        let failure = ExecFailure {
+            error: AppError::SshTimeout(Duration::from_secs(1)),
+            duration: Duration::from_millis(1500),
+            streams: HashMap::from([("stdout".to_string(), b"partial".to_vec())]),
+            tail: "partial".into(),
+        };
+        let response = ToolFailure::<ExecResponse>::from(failure)
+            .into_call_tool_result()
+            .expect("tool failures are results, not protocol errors");
+        let CallToolResponse::Complete(result) = response else {
+            panic!("expected a complete result");
+        };
+        assert_eq!(result.is_error, Some(true));
+        let value = result.structured_content.expect("structured content");
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["error"]["code"], "Timeout");
+        assert_eq!(value["streams"]["stdout"], "partial");
+        assert!(value["exit_code"].is_null());
+    }
 
     #[test]
     fn parse_hpc_uri_extracts_cluster_and_path() {
