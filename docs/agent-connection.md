@@ -2,7 +2,8 @@
 
 Use the GWU Pegasus MCP tools for cluster work. The MCP runs locally and reuses
 an SSH connection established by the human with `ghm up`. SSH calls this shared
-connection a ControlMaster; explain it to users as the "cluster connection".
+connection a ControlMaster (on Windows, a background `ghm` process holds it);
+explain it to users as the "cluster connection".
 It is not a second access route or an authentication bypass.
 
 Before remote work, call `health_check` and read `hpc_describe`. A Running health
