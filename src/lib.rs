@@ -13,6 +13,8 @@ use crate::ssh::{MasterState, SshContext};
 use crate::util::expand_path;
 
 mod broker;
+#[cfg(test)]
+mod broker_tests;
 mod config;
 mod errors;
 mod ipc;
