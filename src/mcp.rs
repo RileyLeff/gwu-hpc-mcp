@@ -85,6 +85,13 @@ fn normalize_cluster_id<'a>(id: Option<&'a str>) -> Option<&'a str> {
 impl McpServer {
     #[tool(
         name = "upload_text_bundle",
+        title = "Upload text files to the cluster",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        ),
         description = "Create a NEW source-text bundle under configured upload_root (or default_cwd). Contents travel as data on stdin, never shell code. Requires exact SHA-256 per file; verifies readback. Refuses existing destinations, traversal and symlink parents. Parent directory must exist. Up to 128 flat files / 8 MiB JSON, 30s timeout, mode 0600; never executes files. On failure inspect partial destination before retrying. Uses existing authenticated cluster connection. Does not relax shell_exec denylist."
     )]
     pub async fn upload_text_bundle(
@@ -131,6 +138,13 @@ impl McpServer {
 
     #[tool(
         name = "shell_exec",
+        title = "Run a shell command on the cluster",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = true
+        ),
         description = "Execute a command on the remote cluster via SSH ControlMaster."
     )]
     pub async fn shell_exec(
@@ -234,6 +248,13 @@ impl McpServer {
 
     #[tool(
         name = "session_open",
+        title = "Open a tmux session",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        ),
         description = "Open a tmux-backed session on the cluster."
     )]
     pub async fn session_open(
@@ -262,6 +283,13 @@ impl McpServer {
 
     #[tool(
         name = "session_exec",
+        title = "Run a command in a tmux session",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = true
+        ),
         description = "Execute a command inside an existing tmux session."
     )]
     pub async fn session_exec(
@@ -325,6 +353,13 @@ impl McpServer {
 
     #[tool(
         name = "session_close",
+        title = "Close a tmux session",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = false
+        ),
         description = "Close a tmux session on the cluster."
     )]
     pub async fn session_close(
@@ -350,6 +385,13 @@ impl McpServer {
 
     #[tool(
         name = "hpc_describe",
+        title = "Describe cluster policies",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
         description = "CRITICAL: Provides essential details on cluster policies, filesystem best practices, Slurm partitions, and module loading guidance. Agents MUST call and interpret its output before submitting jobs, moving data, or configuring environments to ensure compliance and efficiency."
     )]
     pub async fn hpc_describe(
@@ -380,6 +422,13 @@ impl McpServer {
 
     #[tool(
         name = "health_check",
+        title = "Check the cluster connection",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
         description = "Report ControlMaster status for a cluster."
     )]
     pub async fn health_check(
