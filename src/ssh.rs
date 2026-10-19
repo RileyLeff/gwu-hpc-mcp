@@ -11,7 +11,12 @@ use std::{
 use std::os::unix::fs::PermissionsExt;
 
 use tokio::{
-    io::AsyncReadExt, process::Command, select, sync::mpsc, time, time::Instant as TokioInstant,
+    io::{AsyncReadExt, AsyncWriteExt},
+    process::Command,
+    select,
+    sync::mpsc,
+    time,
+    time::Instant as TokioInstant,
 };
 use tracing::warn;
 
@@ -221,15 +226,26 @@ pub async fn exec<F>(
 where
     F: FnMut(&str, &[u8]) + Send,
 {
-    match exec_inner(context, req, &mut on_chunk).await {
+    match exec_inner(context, req, None, &mut on_chunk).await {
         Ok(result @ ExecResult { .. }) => Ok(result),
         Err(failure) => Err(failure),
     }
 }
 
+/// Internal data transport for the fixed, non-executing upload receiver.
+/// Not exposed as arbitrary stdin on shell_exec or session_exec.
+pub(crate) async fn exec_with_input(
+    context: &SshContext,
+    req: ExecRequest,
+    input: Vec<u8>,
+) -> Result<ExecResult, ExecFailure> {
+    exec_inner(context, req, Some(input), &mut |_, _| {}).await
+}
+
 async fn exec_inner<F>(
     context: &SshContext,
     req: ExecRequest,
+    input: Option<Vec<u8>>,
     on_chunk: &mut F,
 ) -> Result<ExecResult, ExecFailure>
 where
@@ -268,7 +284,11 @@ where
     let remote_command = build_remote_command(&req);
     ssh_cmd.arg(remote_command);
     ssh_cmd.kill_on_drop(true);
-    ssh_cmd.stdin(Stdio::null());
+    ssh_cmd.stdin(if input.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    });
     ssh_cmd.stdout(Stdio::piped());
     ssh_cmd.stderr(Stdio::piped());
 
@@ -285,6 +305,12 @@ where
         }
     };
 
+    // Concurrent bounded input avoids blocking before the execution timeout.
+    // Dropping stdin after the write signals EOF to the receiver.
+    let input_task = input.map(|data| {
+        let mut stdin = child.stdin.take().expect("piped upload stdin");
+        tokio::spawn(async move { stdin.write_all(&data).await })
+    });
     let (tx, mut rx) = mpsc::channel::<StreamMessage>(32);
     let mut handles = Vec::new();
 
@@ -415,6 +441,20 @@ where
         let _ = handle.await;
     }
 
+    if let Some(task) = input_task {
+        // Child has exited (or been killed); its pipe cannot keep a writer alive.
+        let written = task.await;
+        if !timed_out && !matches!(written, Ok(Ok(()))) {
+            return Err(ExecFailure {
+                error: AppError::Io(
+                    "upload stdin transfer failed; reconcile destination before retry".into(),
+                ),
+                duration: start.elapsed(),
+                streams,
+                tail: tail.to_lossy_string(),
+            });
+        }
+    }
     let duration = start.elapsed();
     if timed_out {
         return Err(ExecFailure {

@@ -262,6 +262,18 @@ script that speaks MCP to `ghm serve-stdio`. See the
 - `shell_exec`: executes a shell command, optionally with cwd, environment,
   timeout, and PTY. `pty=false` keeps stdout and stderr separate. `ok` is true
   only when `exit_code` is zero. A failed cwd stops execution.
+- `upload_text_bundle`: creates a new source bundle below configured
+  `[defaults].upload_root` (falling back to `default_cwd`), with 1–128 flat text
+  files and required UTF-8 SHA-256 hashes. Set upload_root to the intended
+  project directory without changing other clients' default working directory.
+  Its JSON request is transported on stdin to a fixed receiver, never evaluated
+  as shell/Python code. Source prose such as “final shutdown” is therefore data,
+  not a shell command. The shell denylist is unchanged. Existing destinations,
+  traversal and symlink parents are rejected; parent directories must exist.
+  Files are mode 0600 and readback-hashed. Requests are limited to 8 MiB serialized
+  JSON and 30 seconds. Failures can leave a partial new directory: reconcile
+  it before any retry; the tool never overwrites or deletes it. There is no
+  execution, extraction, arbitrary root, executable permission or overwrite option.
 - `session_open`, `session_exec`, `session_close`: tmux-backed execution.
   Each command runs in a fresh login Bash child in the session; shell variable
   and cwd changes do not persist between calls. Pass `cwd` and `env` explicitly.
@@ -300,6 +312,7 @@ never copy another user's local config unchanged.
 cargo fmt --check
 cargo test --locked
 cargo build --locked
+python3 tests/test_upload_receiver.py
 python3 tests/mcp_smoke.py --binary target/debug/ghm
 ```
 

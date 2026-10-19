@@ -84,6 +84,52 @@ fn normalize_cluster_id<'a>(id: Option<&'a str>) -> Option<&'a str> {
 #[tool_router]
 impl McpServer {
     #[tool(
+        name = "upload_text_bundle",
+        description = "Create a NEW source-text bundle under configured upload_root (or default_cwd). Contents travel as data on stdin, never shell code. Requires exact SHA-256 per file; verifies readback. Refuses existing destinations, traversal and symlink parents. Parent directory must exist. Up to 128 flat files / 8 MiB JSON, 30s timeout, mode 0600; never executes files. On failure inspect partial destination before retrying. Uses existing authenticated cluster connection. Does not relax shell_exec denylist."
+    )]
+    pub async fn upload_text_bundle(
+        &self,
+        Parameters(params): Parameters<crate::upload::UploadTextBundleParams>,
+    ) -> Result<Json<ShellExecResponse>, rmcp::ErrorData> {
+        let snapshot = self.snapshot();
+        let root = snapshot
+            .config
+            .defaults
+            .upload_root
+            .as_deref()
+            .or(snapshot.config.defaults.default_cwd.as_deref())
+            .ok_or_else(|| {
+                to_mcp_error(AppError::InvalidInput(
+                    "upload requires configured upload_root or project default_cwd".into(),
+                ))
+            })?;
+        let (request, input) = crate::upload::prepare(root, &params).map_err(to_mcp_error)?;
+        let cluster = self
+            .acquire_cluster(normalize_cluster_id(params.cluster.as_deref()))
+            .map_err(to_mcp_error)?;
+        let context = self.build_context(cluster);
+        let _permit = self
+            .concurrency
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| {
+                rmcp::ErrorData::internal_error(
+                    "Failed to acquire upload permit",
+                    Some(json!({"error": e.to_string()})),
+                )
+            })?;
+        ensure_master(&context, &self.remote_user).await?;
+        match ssh::exec_with_input(&context, request, input).await {
+            Ok(result) => Ok(Json(self.to_shell_response(
+                result,
+                vec!["Create-only upload; file contents were not executed.".into()],
+            ))),
+            Err(failure) => Err(exec_failure_to_error("upload_text_bundle", failure)),
+        }
+    }
+
+    #[tool(
         name = "shell_exec",
         description = "Execute a command on the remote cluster via SSH ControlMaster."
     )]

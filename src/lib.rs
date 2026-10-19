@@ -18,6 +18,7 @@ mod mcp;
 mod policy;
 mod sessions;
 mod ssh;
+mod upload;
 mod util;
 
 #[derive(Parser)]

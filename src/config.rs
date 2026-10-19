@@ -36,6 +36,9 @@ pub struct Defaults {
     pub default_cluster: Option<String>,
     #[serde(default)]
     pub default_cwd: Option<String>,
+    /// Bounded root for create-only source uploads; falls back to default_cwd.
+    #[serde(default)]
+    pub upload_root: Option<String>,
 }
 
 impl Defaults {
@@ -65,6 +68,7 @@ impl Default for Defaults {
             warn_on_login_compute: Self::default_warn_on_login_compute(),
             default_cluster: None,
             default_cwd: None,
+            upload_root: None,
         }
     }
 }
