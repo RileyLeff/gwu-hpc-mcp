@@ -1,6 +1,6 @@
 [package]
 name = "gwu-hpc-mcp"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 description = "MCP server and CLI that lets AI agents use GWU Pegasus through your own authenticated SSH connection"
 repository = "https://github.com/RileyLeff/gwu-hpc-mcp"
