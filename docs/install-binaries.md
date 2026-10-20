@@ -53,7 +53,7 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/RileyLeff/gwu-hpc-mcp/r
 Use the [GitHub CLI](https://cli.github.com/) instead. Install it, run
 `gh auth login` with an account that has access to the repository, then use
 one of the options below. Omitting the tag downloads the latest release; pass
-a tag such as `v0.1.2` to pin one.
+a tag such as `v0.1.3` to pin one.
 
 ### Option A: run the installer against downloaded files
 
@@ -261,8 +261,8 @@ editing it by hand. Install dist with `brew install cargo-dist` or from its
 3. Tag and push. The tag must match the `Cargo.toml` version:
 
    ```sh
-   git tag v0.1.3
-   git push upstream v0.1.3
+   git tag v0.1.4
+   git push upstream v0.1.4
    ```
 
 The workflow builds every target, then creates a GitHub Release with the
