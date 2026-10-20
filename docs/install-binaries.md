@@ -17,7 +17,7 @@ Run `ghm --version` to confirm which binary is on your PATH.
 | macOS, Intel | `gwu-hpc-mcp-x86_64-apple-darwin.tar.xz` | Supported |
 | Linux / WSL, x86_64 | `gwu-hpc-mcp-x86_64-unknown-linux-musl.tar.xz` | Supported |
 | Linux / WSL, ARM64 | `gwu-hpc-mcp-aarch64-unknown-linux-musl.tar.xz` | Supported |
-| Windows (native), x86_64 | `gwu-hpc-mcp-x86_64-pc-windows-msvc.zip` | **Experimental, does not work yet** |
+| Windows, x86_64 and ARM64 | `gwu-hpc-mcp-x86_64-pc-windows-msvc.zip` | Supported |
 
 The Linux builds are statically linked against musl, so one binary runs on any
 distribution and inside WSL with no glibc version requirements.
@@ -33,10 +33,11 @@ Not sure which archive you need? Run `uname -sm`:
 - `Linux x86_64` → `x86_64-unknown-linux-musl`
 - `Linux aarch64` → `aarch64-unknown-linux-musl`
 
-Native Windows is experimental because `ghm` shares the cluster connection
-through OpenSSH ControlMaster, which Windows OpenSSH does not support. A
-different SSH backend is needed before `ghm up` works there. **On Windows,
-install the Linux x86_64 build inside WSL.**
+On Windows, use the `x86_64-pc-windows-msvc` build. It runs natively with
+ghm's built-in SSH client, so it needs neither WSL nor OpenSSH, and Windows on
+ARM runs it through its built-in x64 emulation. If you prefer WSL, install the
+Linux build inside WSL instead; the two installations do not share a
+connection.
 
 ## While the repository is private
 
@@ -58,7 +59,7 @@ a tag such as `v0.1.2` to pin one.
 
 This uses the release's own installer, which puts both binaries in
 `~/.cargo/bin` (the same place `cargo install` used) and adds that directory to
-your PATH. Run it in a macOS, Linux, or WSL shell:
+your PATH. In a macOS, Linux, or WSL shell:
 
 ```sh
 mkdir -p ~/ghm-download && cd ~/ghm-download
@@ -69,11 +70,27 @@ gh release download --repo RileyLeff/gwu-hpc-mcp --clobber \
 GWU_HPC_MCP_DOWNLOAD_URL="file://$PWD" sh ./gwu-hpc-mcp-installer.sh
 ```
 
+In Windows PowerShell (install the GitHub CLI with `winget install GitHub.cli`
+first):
+
+```powershell
+New-Item -ItemType Directory -Force "$HOME\ghm-download" | Out-Null
+Set-Location "$HOME\ghm-download"
+gh release download --repo RileyLeff/gwu-hpc-mcp --clobber `
+  --pattern 'gwu-hpc-mcp-installer.ps1' `
+  --pattern 'gwu-hpc-mcp-x86_64-pc-windows-msvc.zip' `
+  --pattern 'sha256.sum'
+$env:GWU_HPC_MCP_DOWNLOAD_URL = ([Uri]$PWD.Path).AbsoluteUri
+powershell -ExecutionPolicy Bypass -File .\gwu-hpc-mcp-installer.ps1
+```
+
 `GWU_HPC_MCP_DOWNLOAD_URL` points the installer at the local files instead of
 GitHub, so it never needs network access to the private repository. Open a new
 terminal afterwards so the PATH change takes effect. If you previously
 installed with `cargo install --path .`, the installer replaces that copy in
-place. Set `GWU_HPC_MCP_NO_MODIFY_PATH=1` to skip editing your shell profile.
+place. Set `GWU_HPC_MCP_NO_MODIFY_PATH=1` to skip editing your shell profile
+(or, on Windows, your user PATH). On Windows, run `ghm down` and close your
+agent before reinstalling; Windows cannot replace a running `.exe`.
 
 ### Option B: extract one archive by hand
 
@@ -95,6 +112,28 @@ The checksum line should end in `OK`. On macOS, `shasum` may also print
 checksum file and is harmless. Make sure `~/.cargo/bin` is on your PATH. The
 MCP registration commands in [client-setup.md](client-setup.md) reference
 `$HOME/.cargo/bin/ghm`; if you install elsewhere, use that path instead.
+
+On Windows, in PowerShell:
+
+```powershell
+$zip = 'gwu-hpc-mcp-x86_64-pc-windows-msvc.zip'
+New-Item -ItemType Directory -Force "$HOME\ghm-download" | Out-Null
+Set-Location "$HOME\ghm-download"
+gh release download --repo RileyLeff/gwu-hpc-mcp --clobber --pattern "$zip*"
+$expected = (Get-Content "$zip.sha256").Split(' ')[0]
+if ((Get-FileHash $zip).Hash -ne $expected) { throw 'checksum mismatch' }
+Expand-Archive -Force $zip extracted
+$bin = "$HOME\.cargo\bin"
+New-Item -ItemType Directory -Force $bin | Out-Null
+Move-Item -Force extracted\*.exe $bin
+$path = [Environment]::GetEnvironmentVariable('Path', 'User')
+if (($path -split ';') -notcontains $bin) {
+  [Environment]::SetEnvironmentVariable('Path', "$path;$bin", 'User')
+}
+```
+
+This checks the archive, installs both `.exe` files in `%USERPROFILE%\.cargo\bin`,
+and adds that folder to your user PATH. Open a new terminal afterwards.
 
 ### Making the binaries public
 
@@ -129,7 +168,7 @@ macOS, Linux, or WSL:
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/RileyLeff/gwu-hpc-mcp/releases/latest/download/gwu-hpc-mcp-installer.sh | sh
 ```
 
-Windows PowerShell (experimental; see above):
+Windows PowerShell:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -c "irm https://github.com/RileyLeff/gwu-hpc-mcp/releases/latest/download/gwu-hpc-mcp-installer.ps1 | iex"
@@ -168,7 +207,7 @@ would take a custom `notarytool` step in the release workflow.
 
 ## Windows SmartScreen and signing
 
-The Windows build is experimental and unsigned. Unsigned `.exe` files
+The Windows build is unsigned. Unsigned `.exe` files
 downloaded with a browser trigger SmartScreen ("Windows protected your PC");
 users must choose **More info → Run anyway**. The PowerShell installer
 downloads with `irm`, which does not mark files as downloaded from the
@@ -196,7 +235,8 @@ Microsoft's current eligibility and pricing first. To enable it:
    certificate-profile-name = "YOUR_CERTIFICATE_PROFILE"
    ```
 
-Signing is worth setting up only once native Windows works.
+Until then, prefer the PowerShell installer or `gh release download` over a
+browser download.
 
 ## Cutting a release
 

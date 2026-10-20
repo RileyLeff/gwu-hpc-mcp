@@ -14,9 +14,8 @@ installers = ["shell", "powershell"]
 # Linux ships musl builds only: Rust's musl targets link statically, so one
 # binary runs on any distro and inside WSL without glibc version issues.
 #
-# x86_64-pc-windows-msvc is EXPERIMENTAL. It builds, but native Windows
-# needs a non-ControlMaster SSH backend before `ghm up` works there. Windows
-# users should install the Linux build inside WSL instead.
+# x86_64-pc-windows-msvc runs natively with ghm's built-in SSH client, and
+# Windows on ARM runs it under x64 emulation.
 targets = [
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",
