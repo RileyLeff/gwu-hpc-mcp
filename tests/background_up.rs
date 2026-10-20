@@ -338,7 +338,13 @@ async fn up_leaves_a_background_connection_that_other_processes_use() {
     // `up` must return once authenticated, leaving the broker running.
     let up = tokio::time::timeout(Duration::from_secs(60), home.run(&["up"]))
         .await
-        .expect("`ghm up` did not return");
+        .unwrap_or_else(|_| {
+            panic!(
+                "`ghm up` did not return (a background process holding its \
+                 output open also causes this); broker log:\n{}",
+                home.log()
+            )
+        });
     assert!(up.status.success(), "broker log:\n{}", home.log());
     let status = home.run(&["status"]).await;
     assert!(
