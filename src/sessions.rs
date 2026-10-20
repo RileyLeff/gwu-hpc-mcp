@@ -99,7 +99,7 @@ impl SessionManager {
             escape_for_shell(&script)
         );
         let combined = format!("bash -c {}", escape_for_shell(&wrapper));
-        let target = format!("={name}:0.0");
+        let target = pane_target(name);
         let send = vec![
             "send-keys".into(),
             "-t".into(),
@@ -171,6 +171,14 @@ impl SessionExecFailure {
             output: String::new(),
         }
     }
+}
+
+/// Active pane of the session's lowest-numbered window. `^` avoids hard-coding
+/// index 0, which breaks when the user's tmux.conf sets base-index or
+/// pane-base-index, and stays on the original window if others are opened.
+/// The `=` prefix forces an exact session-name match (tmux >= 2.1).
+fn pane_target(name: &str) -> String {
+    format!("={name}:^")
 }
 
 fn validate_name(name: &str) -> AppResult<()> {
@@ -259,7 +267,13 @@ fn parse_result(bytes: &[u8]) -> AppResult<Option<(i32, Vec<u8>)>> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_result;
+    use super::{pane_target, parse_result};
+
+    #[test]
+    fn pane_target_is_exact_and_independent_of_base_index() {
+        assert_eq!(pane_target("job-1"), "=job-1:^");
+    }
+
     #[test]
     fn output_is_independent_of_scrolling_unicode_and_terminal_codes() {
         let output = format!("{}\n\\x1b[2J中文🦀\n", "line\n".repeat(10000));
