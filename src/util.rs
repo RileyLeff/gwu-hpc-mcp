@@ -4,8 +4,6 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use shell_escape::escape;
-
 use crate::errors::{AppError, AppResult};
 
 /// The local user's home directory ($HOME on Unix, the user profile on Windows).
@@ -32,8 +30,11 @@ pub fn join_user_host(user: &str, host: &str) -> String {
     format!("{user}@{host}")
 }
 
+/// Quote for the cluster's POSIX shell. Always use POSIX rules:
+/// `shell_escape::escape` switches to cmd.exe quoting on Windows, which the
+/// remote shell would misread.
 pub fn escape_for_shell(value: &str) -> String {
-    escape(Cow::Borrowed(value)).to_string()
+    shell_escape::unix::escape(Cow::Borrowed(value)).to_string()
 }
 
 pub fn format_duration(duration: Duration) -> String {
@@ -73,7 +74,14 @@ impl TailBuffer {
 
 #[cfg(test)]
 mod tests {
-    use super::{TailBuffer, expand_path, validate_env};
+    use super::{TailBuffer, escape_for_shell, expand_path, validate_env};
+
+    #[test]
+    fn quotes_for_the_remote_posix_shell_on_every_platform() {
+        assert_eq!(escape_for_shell("plain"), "plain");
+        assert_eq!(escape_for_shell("a b"), "'a b'");
+        assert_eq!(escape_for_shell("it's $HOME"), r"'it'\''s $HOME'");
+    }
 
     #[test]
     fn validate_environment_names_and_bare_home() {
