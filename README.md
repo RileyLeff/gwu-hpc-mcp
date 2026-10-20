@@ -19,11 +19,14 @@ or verification code. `ghm` is the short name for `gwu-hpc-mcp`.
 
 ## Install on your computer
 
-The current distribution is source-based. The GitHub repository is private at
-this writing: request repository access from the maintainer or obtain a source
-archive containing these updated files. A private repository requires GitHub
-authentication to clone. There are no packaged installers or prebuilt release
-binaries provided by these instructions.
+The GitHub repository is private at this writing: request repository access
+from the maintainer or obtain a source archive containing these updated files.
+
+**Fastest:** install a prebuilt release for macOS, Linux, or Windows by
+following [docs/install-binaries.md](docs/install-binaries.md); no Rust or
+build tools are needed. Then skip to
+[First connection](#first-connection-from-config-to-ghm-up). To build from
+source instead, follow the steps for your platform below.
 
 ### macOS
 
