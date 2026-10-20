@@ -195,6 +195,7 @@ identity_files = ['{key}']
             .arg("--user")
             .arg("alice")
             .args(args)
+            .env("RUST_BACKTRACE", "1")
             .env("HOME", &self.dir)
             .env("USERPROFILE", &self.dir)
             .env_remove("SSH_AUTH_SOCK")
@@ -210,8 +211,9 @@ identity_files = ['{key}']
             .await
             .unwrap();
         eprintln!(
-            "$ ghm {}\n{}{}",
+            "$ ghm {} ({:?})\n{}{}",
             args.join(" "),
+            output.status,
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
@@ -345,7 +347,12 @@ async fn up_leaves_a_background_connection_that_other_processes_use() {
                 home.log()
             )
         });
-    assert!(up.status.success(), "broker log:\n{}", home.log());
+    assert!(
+        up.status.success(),
+        "`ghm up` exited with {:?}; broker log:\n{}",
+        up.status,
+        home.log()
+    );
     let status = home.run(&["status"]).await;
     assert!(
         stdout(&status).contains("Status: running"),
