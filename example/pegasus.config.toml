@@ -23,6 +23,9 @@ host = "pegasus.arc.gwu.edu"
 port = 22
 
 [clusters.ssh]
+# "auto" = OpenSSH ControlMaster on macOS/Linux/WSL, built-in client on native Windows.
+# Set "builtin" to use the built-in client everywhere, or "openssh" to force OpenSSH.
+backend = "auto"
 control_path = "~/.gwu-hpc-mcp/cm-%r@%h_%p"
 server_alive_interval = 60
 server_alive_count_max = 3

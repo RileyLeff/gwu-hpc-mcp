@@ -70,9 +70,33 @@ Codex) as well as the MCP `timeout_s` argument, which defaults to 120 seconds fo
 `shell_exec`. Run durable compute as Slurm jobs and poll their status.
 See the [official Codex MCP documentation](https://developers.openai.com/codex/mcp).
 
-## Windows-native clients: launch the server inside WSL
+## Windows: ghm installed natively
 
-Use the same WSL distribution and Linux account where you installed `ghm` and
+In PowerShell, replace `YOUR_NETID`:
+
+```powershell
+claude mcp add --transport stdio --scope user gwu_hpc -- "$env:USERPROFILE\.cargo\bin\ghm.exe" serve-stdio --config "$env:USERPROFILE\.gwu-hpc-mcp\config.toml" --user YOUR_NETID
+```
+
+```powershell
+codex mcp add gwu_hpc -- "$env:USERPROFILE\.cargo\bin\ghm.exe" serve-stdio --config "$env:USERPROFILE\.gwu-hpc-mcp\config.toml" --user YOUR_NETID
+```
+
+For Codex desktop without the CLI, the equivalent TOML (TOML literal strings
+keep the backslashes as written):
+
+```toml
+[mcp_servers.gwu_hpc]
+command = 'C:\Users\YOUR_WINDOWS_USER\.cargo\bin\ghm.exe'
+args = ["serve-stdio", "--config", 'C:\Users\YOUR_WINDOWS_USER\.gwu-hpc-mcp\config.toml', "--user", "YOUR_NETID"]
+```
+
+Run `ghm up --user YOUR_NETID` in PowerShell or Windows Terminal before using
+the tools. The MCP server and `ghm up` must run as the same Windows user.
+
+## Windows clients launching a WSL installation
+
+If ghm is installed inside WSL instead, use the same WSL distribution and Linux account where you installed `ghm` and
 ran `ghm up`. Replace both `YOUR_WSL_USER` and `YOUR_NETID`; they are different
 identities. In PowerShell, register the client you use:
 
@@ -92,9 +116,8 @@ command = "wsl.exe"
 args = ["--distribution", "Ubuntu", "--user", "YOUR_WSL_USER", "--exec", "/home/YOUR_WSL_USER/.cargo/bin/ghm", "serve-stdio", "--config", "/home/YOUR_WSL_USER/.gwu-hpc-mcp/config.toml", "--user", "YOUR_NETID"]
 ```
 
-These Windows launch recipes have not been tested on a Windows host here. For
+These WSL launch recipes have not been tested on a Windows host here. For
 clients already running inside WSL, use the ordinary Linux commands above.
-Native Windows execution of ghm without WSL is not supported.
 
 ## Instructions you can give an agent doing setup
 

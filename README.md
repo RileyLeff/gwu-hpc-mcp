@@ -12,8 +12,8 @@ or verification code. `ghm` is the short name for `gwu-hpc-mcp`.
   and keep it connected. Losing VPN interrupts cluster access and can drop the
   SSH connection.** Reconnect VPN and reauthenticate if necessary.
 - You need an MCP-capable agent/client that can launch a local stdio server.
-- macOS and Linux are supported. On Windows, use WSL; native Windows OpenSSH is
-  not the supported connection-sharing route for this tool.
+- macOS, Linux, and Windows are supported. On Windows, ghm runs natively with
+  its built-in SSH client (no WSL needed); WSL also works.
 - The cluster needs Bash, tmux, and GNU `timeout`. These were available in the
   live Pegasus smoke tests. They do not need to be installed locally.
 
@@ -56,9 +56,21 @@ On Fedora use `sudo dnf install gcc make curl git openssh-clients`; on other
 Linux distributions install the equivalent packages. Install current stable
 Rust using the two Rust installer commands above. Then continue below.
 
+### Windows (native)
+
+ghm includes its own SSH client on Windows, because Windows OpenSSH cannot share
+one authenticated connection between processes. Nothing besides Rust is needed.
+
+Install current stable Rust with `rustup-init.exe` from the
+[official Rust installer](https://rust-lang.org/tools/install/). Accept its
+offer to install the Visual Studio C++ Build Tools (Rust needs them to link
+programs on Windows). Open a new PowerShell window and continue to **Build and
+install** below. Run every `ghm` command in this guide from PowerShell or
+Windows Terminal; the config lives in `%USERPROFILE%\.gwu-hpc-mcp\config.toml`.
+
 ### Windows (WSL)
 
-In an administrator PowerShell window, follow
+As an alternative to native Windows, in an administrator PowerShell window, follow
 [Microsoft's WSL installation guide](https://learn.microsoft.com/en-us/windows/wsl/install):
 
 ```powershell
@@ -90,8 +102,9 @@ If you received a source archive, extract it and run `cargo install --path .
 current stable Rust toolchain; the source requires Rust 1.88 or newer. If Rust
 is already installed, `rustup update stable` updates it.
 
-Both `ghm` and `gwu-hpc-mcp` are installed in `~/.cargo/bin`. If your terminal
-cannot find them, run `. "$HOME/.cargo/env"` or reopen the terminal. A GUI agent
+Both `ghm` and `gwu-hpc-mcp` are installed in `~/.cargo/bin`
+(`%USERPROFILE%\.cargo\bin` on Windows). If your terminal cannot find them, run
+`. "$HOME/.cargo/env"` or reopen the terminal. A GUI agent
 may need the absolute executable path even when your terminal can find `ghm`.
 
 ## First connection: from config to ghm up
@@ -112,6 +125,16 @@ credentials/2FA. **Enter them only in your terminal, not in agent chat.** Check
 that `ghm status` says `running` and `ghm test` prints a cluster hostname and exits
 successfully. A first SSH connection may ask you to verify the host fingerprint;
 use GW's trusted guidance rather than disabling host-key checking.
+
+On Windows, `ghm up` asks for your password and Duo response, then hands the
+connection to a small background `ghm` process and returns. The connection
+stays up after you close the terminal, until `ghm down`, a network drop, or
+sign-out. `ghm up --foreground` instead keeps it in that terminal until Ctrl-C.
+Background connection details are logged to
+`%USERPROFILE%\.gwu-hpc-mcp\broker-pegasus.log`. Run `ghm up` in an ordinary
+(not "Run as administrator") terminal so your agent can use the connection, and
+run `ghm down` and close your agent before reinstalling ghm: Windows cannot
+replace a program file while it is running.
 
 No edits to `~/.ssh/config` are required. You can optionally set
 `export GWU_HPC_MCP_USER=YOUR_NETID` in your shell startup file to omit `--user`.
@@ -165,12 +188,15 @@ client's MCP configuration (do not replace unrelated server entries):
 ```
 
 Use `command -v ghm` for the executable path and `echo "$HOME"` for your home
-path. Examples: `/Users/YOUR_MAC_USER/.cargo/bin/ghm` on macOS and
-`/home/YOUR_LINUX_USER/.cargo/bin/ghm` on Linux/WSL. Do not put literal `~` in a
+path. Examples: `/Users/YOUR_MAC_USER/.cargo/bin/ghm` on macOS,
+`/home/YOUR_LINUX_USER/.cargo/bin/ghm` on Linux/WSL, and
+`C:\\Users\\YOUR_WINDOWS_USER\\.cargo\\bin\\ghm.exe` in JSON on native Windows
+(`(Get-Command ghm).Source` in PowerShell prints it). Do not put literal `~` in a
 client's executable path or JSON path value. Your client may use another config
 format; preserve its required structure and use the same command/arguments.
 
-For a **Windows-native client launching the WSL installation**, use an explicit
+For a **Windows-native client launching a WSL installation** of ghm (not needed
+when ghm is installed natively on Windows), use an explicit
 WSL distribution and Linux user. The NetID is a separate value:
 
 ```json
@@ -218,6 +244,15 @@ An existing `Host pegasus` alias may have its own ControlMaster/ControlPath. A
 working `ssh pegasus` session does not necessarily establish the socket that ghm
 expects. Use `ghm up` and `ghm status` for this tool; do not copy someone else's
 SSH config. The MCP is not a separate cluster login or an alternative to VPN/2FA.
+
+On native Windows (or anywhere with `backend = "builtin"` in `[clusters.ssh]`),
+ghm uses its built-in SSH client instead of OpenSSH. `ghm up` starts a
+background `ghm` process that logs in once and holds the connection; MCP
+servers ask it to run each command over a local channel that only your Windows
+account can open. It reads and updates the same `~/.ssh/known_hosts` file as
+OpenSSH, tries keys from your SSH agent or `~/.ssh/id_ed25519`, `id_ecdsa` and
+`id_rsa`, then asks for your password and 2FA. `ghm status` and `ghm doctor`
+show which backend is in use.
 
 Several MCP clients can share one ghm connection. Give each task its own tmux
 session. `ghm down` affects every client sharing that connection, so coordinate
@@ -363,6 +398,13 @@ The smoke test uses the real MCP stdio protocol and requires an existing Pegasus
 ControlMaster plus your local config. It creates and removes a uniquely named
 tmux session, checks shell errors, Unicode/large (truncated) output, invalid cwd,
 timeout as an `isError` result, and session reuse. It does not submit Slurm jobs.
+
+`cargo test` also runs the built-in SSH client end to end against an
+in-process SSH server that asks for a password and a Duo-style passcode. To try
+`ghm up` against that fake cluster by hand, run
+`cargo test serve_fake_cluster -- --ignored --nocapture`, point a config with
+`backend = "builtin"` at the printed port, and answer `correct horse` and
+`424242`. Commands run on your own machine as you.
 
 `ghm doctor` checks local configuration and binaries. `ghm down` closes the SSH
 ControlMaster. Keep the connection open while using the tools.

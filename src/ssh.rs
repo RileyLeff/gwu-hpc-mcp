@@ -14,15 +14,16 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     process::Command,
     select,
-    sync::mpsc,
+    sync::{mpsc, oneshot},
     time,
-    time::Instant as TokioInstant,
 };
 use tracing::warn;
 
 use crate::{
-    config::{Cluster, ClusterSsh},
+    broker,
+    config::{Cluster, ClusterSsh, SshBackend},
     errors::{AppError, AppResult},
+    ipc,
     util::{TailBuffer, escape_for_shell, expand_path, join_user_host},
 };
 
@@ -53,6 +54,19 @@ impl SshContext {
     pub fn tmux_binary(&self) -> &str {
         &self.cluster.ssh.tmux_binary
     }
+
+    /// The backend in effect: `auto` is the built-in client on Windows.
+    pub fn backend(&self) -> SshBackend {
+        self.cluster.ssh.backend.resolve()
+    }
+
+    /// Where the shared cluster connection lives, for status and errors.
+    pub fn connection_endpoint(&self) -> AppResult<String> {
+        match self.backend() {
+            SshBackend::Builtin => Ok(ipc::endpoint(self)?.to_string()),
+            _ => Ok(self.control_path()?.display().to_string()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +77,9 @@ pub enum MasterState {
 }
 
 pub async fn check_master(context: &SshContext) -> AppResult<MasterState> {
+    if context.backend() == SshBackend::Builtin {
+        return broker::check(context).await;
+    }
     let control_path = context.control_path()?;
     if !control_path.exists() {
         return Ok(MasterState::Missing);
@@ -90,6 +107,9 @@ pub async fn check_master(context: &SshContext) -> AppResult<MasterState> {
 }
 
 pub async fn shutdown_master(context: &SshContext) -> AppResult<()> {
+    if context.backend() == SshBackend::Builtin {
+        return broker::shutdown(context).await;
+    }
     let control_path = context.control_path()?;
     if !control_path.exists() {
         return Ok(());
@@ -251,17 +271,125 @@ async fn exec_inner<F>(
 where
     F: FnMut(&str, &[u8]) + Send,
 {
-    let control_path = match context.control_path() {
-        Ok(path) => path,
-        Err(e) => {
-            return Err(ExecFailure {
-                error: e,
-                duration: Duration::from_secs(0),
-                streams: HashMap::new(),
-                tail: String::new(),
-            });
-        }
+    let start = Instant::now();
+    let fail = |error| ExecFailure {
+        error,
+        duration: Duration::from_secs(0),
+        streams: HashMap::new(),
+        tail: String::new(),
     };
+    let has_input = input.is_some();
+    let started = match context.backend() {
+        SshBackend::Builtin => start_builtin(context, &req, input).await,
+        _ => start_openssh(context, &req, input),
+    };
+    let mut running = started.map_err(fail)?;
+
+    let mut tail = TailBuffer::new(4096);
+    let mut streams: HashMap<String, Vec<u8>> = HashMap::new();
+    let mut exit_code = None;
+    let mut input_failed = false;
+    let mut failed = None;
+    let mut timed_out = false;
+    let deadline = req.timeout.map(|d| time::Instant::now() + d);
+    loop {
+        let event = select! {
+            event = running.events.recv() => event,
+            _ = sleep_until(deadline), if !timed_out => {
+                timed_out = true;
+                running.kill();
+                continue;
+            }
+        };
+        match event {
+            Some(Event::Data(name, chunk)) => {
+                if !chunk.is_empty() {
+                    streams
+                        .entry(name.to_string())
+                        .or_default()
+                        .extend_from_slice(&chunk);
+                    on_chunk(name, &chunk);
+                    tail.push(&chunk);
+                }
+            }
+            Some(Event::Exit(code)) => exit_code = Some(code),
+            Some(Event::InputFailed) => input_failed = true,
+            Some(Event::Failed(error)) => failed = Some(error),
+            None => break,
+        }
+    }
+
+    let error = if timed_out {
+        Some(AppError::SshTimeout(req.timeout.unwrap_or_default()))
+    } else if let Some(error) = failed {
+        Some(error)
+    } else if input_failed && has_input {
+        Some(AppError::Io(
+            "upload stdin transfer failed; reconcile destination before retry".into(),
+        ))
+    } else if exit_code.is_none() {
+        Some(AppError::SshSpawn(
+            "lost the cluster connection before the command finished".into(),
+        ))
+    } else {
+        None
+    };
+    let duration = start.elapsed();
+    match error {
+        Some(error) => Err(ExecFailure {
+            error,
+            duration,
+            streams,
+            tail: tail.to_lossy_string(),
+        }),
+        None => Ok(ExecResult {
+            exit_code: exit_code.unwrap_or(255),
+            duration,
+            streams,
+            tail: tail.to_lossy_string(),
+        }),
+    }
+}
+
+async fn sleep_until(deadline: Option<time::Instant>) {
+    match deadline {
+        Some(deadline) => time::sleep_until(deadline).await,
+        None => std::future::pending().await,
+    }
+}
+
+enum Event {
+    Data(&'static str, Vec<u8>),
+    /// Final event when the command ran to completion (all output precedes it).
+    Exit(i32),
+    InputFailed,
+    Failed(AppError),
+}
+
+/// A command started on some backend. Dropping it stops the command.
+struct Running {
+    events: mpsc::Receiver<Event>,
+    kill: Option<oneshot::Sender<()>>,
+}
+
+impl Running {
+    fn kill(&mut self) {
+        if let Some(kill) = self.kill.take() {
+            let _ = kill.send(());
+        }
+    }
+}
+
+fn stdout_name(req: &ExecRequest) -> &'static str {
+    if req.pty { "pty" } else { "stdout" }
+}
+
+fn start_openssh(
+    context: &SshContext,
+    req: &ExecRequest,
+    input: Option<Vec<u8>>,
+) -> AppResult<Running> {
+    let control_path = context.control_path()?;
     let mut ssh_cmd = Command::new(context.ssh_binary());
     ssh_cmd
         .arg("-S")
@@ -280,9 +408,7 @@ where
         ssh_cmd.arg("-T");
     }
     ssh_cmd.arg(join_user_host(&context.user, &context.cluster.host));
-
-    let remote_command = build_remote_command(&req);
-    ssh_cmd.arg(remote_command);
+    ssh_cmd.arg(build_remote_command(req));
     ssh_cmd.kill_on_drop(true);
     ssh_cmd.stdin(if input.is_some() {
         Stdio::piped()
@@ -291,19 +417,9 @@ where
     });
     ssh_cmd.stdout(Stdio::piped());
     ssh_cmd.stderr(Stdio::piped());
-
-    let start = Instant::now();
-    let mut child = match ssh_cmd.spawn() {
-        Ok(child) => child,
-        Err(e) => {
-            return Err(ExecFailure {
-                error: AppError::SshSpawn(format!("failed to spawn ssh: {e}")),
-                duration: Duration::from_secs(0),
-                streams: HashMap::new(),
-                tail: String::new(),
-            });
-        }
-    };
+    let mut child = ssh_cmd
+        .spawn()
+        .map_err(|e| AppError::SshSpawn(format!("failed to spawn ssh: {e}")))?;
 
     // Concurrent bounded input avoids blocking before the execution timeout.
     // Dropping stdin after the write signals EOF to the receiver.
@@ -311,168 +427,121 @@ where
         let mut stdin = child.stdin.take().expect("piped upload stdin");
         tokio::spawn(async move { stdin.write_all(&data).await })
     });
-    let (tx, mut rx) = mpsc::channel::<StreamMessage>(32);
-    let mut handles = Vec::new();
-
+    let (tx, events) = mpsc::channel::<Event>(32);
+    let mut pumps = Vec::new();
     if let Some(stdout) = child.stdout.take() {
-        let stream_name: &'static str = if req.pty { "pty" } else { "stdout" };
-        handles.push(spawn_stream_pump(stream_name, stdout, tx.clone()));
+        pumps.push(spawn_stream_pump(stdout_name(req), stdout, tx.clone()));
     }
     if let Some(stderr) = child.stderr.take() {
-        handles.push(spawn_stream_pump("stderr", stderr, tx.clone()));
+        pumps.push(spawn_stream_pump("stderr", stderr, tx.clone()));
     }
-    drop(tx);
-
-    let mut tail = TailBuffer::new(4096);
-    let mut streams: HashMap<String, Vec<u8>> = HashMap::new();
-    let mut status_opt = None;
-    let mut status_tick = Box::pin(time::sleep(Duration::from_millis(100)));
-    let mut timed_out = false;
-    let timeout_value = req.timeout;
-    let mut timeout_fut = timeout_value.map(|d| Box::pin(time::sleep(d)));
-
-    let mut channel_open = true;
-    loop {
-        if let Some(sleep) = timeout_fut.as_mut() {
-            select! {
-                maybe_msg = rx.recv(), if channel_open => {
-                    match maybe_msg {
-                        Some(StreamMessage::Data { name, chunk }) => {
-                            if !chunk.is_empty() {
-                                streams
-                                    .entry(name.to_string())
-                                    .or_default()
-                                    .extend_from_slice(&chunk);
-                                on_chunk(name, &chunk);
-                                tail.push(&chunk);
-                            }
-                        }
-                        Some(StreamMessage::Error { name, error }) => {
-                            warn!(%name, %error, "error while reading ssh stream");
-                        }
-                        None => {
-                            channel_open = false;
-                        }
-                    }
+    let (kill, mut kill_rx) = oneshot::channel();
+    tokio::spawn(async move {
+        // A kill request, or the Running handle being dropped, stops ssh.
+        let status = select! {
+            status = child.wait() => status,
+            _ = &mut kill_rx => {
+                if let Err(e) = child.start_kill() {
+                    warn!(error = ?e, "failed to kill ssh process");
                 }
-                _ = status_tick.as_mut(), if status_opt.is_none() => {
-                    match child.try_wait() {
-                        Ok(Some(status)) => status_opt = Some(status),
-                        Ok(None) => {
-                            status_tick
-                                .as_mut()
-                                .reset(TokioInstant::now() + Duration::from_millis(100));
-                        }
-                        Err(e) => {
-                            for handle in handles {
-                                let _ = handle.await;
-                            }
-                            let duration = start.elapsed();
-                            return Err(ExecFailure {
-                                error: AppError::SshSpawn(format!("ssh try_wait failed: {e}")),
-                                duration,
-                                streams,
-                                tail: tail.to_lossy_string(),
-                            });
-                        }
-                    }
-                }
-                _ = sleep.as_mut(), if !timed_out => {
-                    timed_out = true;
-                    timeout_fut = None;
-                    if let Err(e) = child.start_kill() {
-                        warn!(error = ?e, "failed to kill ssh process after timeout");
-                    }
-                }
+                child.wait().await
             }
-        } else {
-            select! {
-                maybe_msg = rx.recv(), if channel_open => {
-                    match maybe_msg {
-                        Some(StreamMessage::Data { name, chunk }) => {
-                            if !chunk.is_empty() {
-                                streams
-                                    .entry(name.to_string())
-                                    .or_default()
-                                    .extend_from_slice(&chunk);
-                                on_chunk(name, &chunk);
-                                tail.push(&chunk);
-                            }
-                        }
-                        Some(StreamMessage::Error { name, error }) => {
-                            warn!(%name, %error, "error while reading ssh stream");
-                        }
-                        None => {
-                            channel_open = false;
-                        }
-                    }
-                }
-                _ = status_tick.as_mut(), if status_opt.is_none() => {
-                    match child.try_wait() {
-                        Ok(Some(status)) => status_opt = Some(status),
-                        Ok(None) => {
-                            status_tick
-                                .as_mut()
-                                .reset(TokioInstant::now() + Duration::from_millis(100));
-                        }
-                        Err(e) => {
-                            for handle in handles {
-                                let _ = handle.await;
-                            }
-                            let duration = start.elapsed();
-                            return Err(ExecFailure {
-                                error: AppError::SshSpawn(format!("ssh try_wait failed: {e}")),
-                                duration,
-                                streams,
-                                tail: tail.to_lossy_string(),
-                            });
-                        }
-                    }
-                }
+        };
+        for pump in pumps {
+            let _ = pump.await;
+        }
+        if let Some(task) = input_task {
+            // Child has exited (or been killed); its pipe cannot keep a writer alive.
+            if !matches!(task.await, Ok(Ok(()))) {
+                let _ = tx.send(Event::InputFailed).await;
             }
         }
+        let _ = tx
+            .send(match status {
+                Ok(status) => Event::Exit(status.code().unwrap_or(255)),
+                Err(e) => Event::Failed(AppError::SshSpawn(format!("ssh wait failed: {e}"))),
+            })
+            .await;
+    });
+    Ok(Running {
+        events,
+        kill: Some(kill),
+    })
+}
 
-        if !channel_open && status_opt.is_some() {
-            break;
-        }
-    }
-
-    for handle in handles {
-        let _ = handle.await;
-    }
-
-    if let Some(task) = input_task {
-        // Child has exited (or been killed); its pipe cannot keep a writer alive.
-        let written = task.await;
-        if !timed_out && !matches!(written, Ok(Ok(()))) {
-            return Err(ExecFailure {
-                error: AppError::Io(
-                    "upload stdin transfer failed; reconcile destination before retry".into(),
-                ),
-                duration: start.elapsed(),
-                streams,
-                tail: tail.to_lossy_string(),
-            });
-        }
-    }
-    let duration = start.elapsed();
-    if timed_out {
-        return Err(ExecFailure {
-            error: AppError::SshTimeout(timeout_value.unwrap_or(Duration::from_secs(0))),
-            duration,
-            streams,
-            tail: tail.to_lossy_string(),
+async fn start_builtin(
+    context: &SshContext,
+    req: &ExecRequest,
+    input: Option<Vec<u8>>,
+) -> AppResult<Running> {
+    let endpoint = ipc::endpoint(context)?;
+    let request = ipc::Request::Exec {
+        command: build_remote_command(req),
+        pty: req.pty,
+    };
+    let (mut reader, mut writer) = ipc::request(&endpoint, request).await?;
+    let stdout = stdout_name(req);
+    let (tx, events) = mpsc::channel::<Event>(32);
+    let (kill, mut kill_rx) = oneshot::channel::<()>();
+    tokio::spawn(async move {
+        // Stdin goes from its own task so output keeps flowing meanwhile.
+        let mut input_task = tokio::spawn(async move {
+            if let Some(data) = input {
+                writer.stdin(&data).await?;
+            }
+            writer.stdin_eof().await?;
+            // Keep the write half open: closing the connection stops the command.
+            std::future::pending::<()>().await;
+            std::io::Result::Ok(())
         });
-    }
-
-    let exit_status = status_opt.expect("status present");
-    let code = exit_status.code().unwrap_or(255);
-
-    Ok(ExecResult {
-        exit_code: code,
-        duration,
-        streams,
-        tail: tail.to_lossy_string(),
+        let mut input_failed = false;
+        loop {
+            let frame = select! {
+                // Kill or drop: closing the connection makes the broker stop the command.
+                _ = &mut kill_rx => break,
+                done = &mut input_task, if !input_task.is_finished() => {
+                    input_failed = !matches!(done, Ok(Ok(())));
+                    continue;
+                }
+                frame = reader.frame() => frame,
+            };
+            let event = match frame {
+                Ok(Some(ipc::Frame::Stdout(data))) => Event::Data(stdout, data.to_vec()),
+                Ok(Some(ipc::Frame::Stderr(data))) => Event::Data("stderr", data.to_vec()),
+                Ok(Some(ipc::Frame::Control(body))) => {
+                    let event = match ipc::parse::<ipc::Reply>(&body) {
+                        Ok(ipc::Reply::Exit { code, .. }) => {
+                            if input_failed {
+                                let _ = tx.send(Event::InputFailed).await;
+                            }
+                            // Like OpenSSH: no exit status (e.g. killed by a signal) is 255.
+                            Event::Exit(code.map_or(255, |c| c as i32))
+                        }
+                        Ok(ipc::Reply::Error { message }) => {
+                            Event::Failed(AppError::SshSpawn(message))
+                        }
+                        Ok(other) => Event::Failed(AppError::SshSpawn(format!(
+                            "unexpected reply from the cluster connection: {other:?}"
+                        ))),
+                        Err(e) => Event::Failed(AppError::SshSpawn(format!(
+                            "bad reply from the cluster connection: {e}"
+                        ))),
+                    };
+                    let _ = tx.send(event).await;
+                    break;
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => break,
+            };
+            if tx.send(event).await.is_err() {
+                break;
+            }
+        }
+        input_task.abort();
+    });
+    Ok(Running {
+        events,
+        kill: Some(kill),
     })
 }
 
@@ -502,15 +571,10 @@ fn render_control_path(ssh: &ClusterSsh, user: &str, host: &str, port: u16) -> A
     expand_path(&replaced)
 }
 
-enum StreamMessage {
-    Data { name: &'static str, chunk: Vec<u8> },
-    Error { name: &'static str, error: String },
-}
-
 fn spawn_stream_pump(
     name: &'static str,
     mut reader: impl tokio::io::AsyncRead + Unpin + Send + 'static,
-    sender: mpsc::Sender<StreamMessage>,
+    sender: mpsc::Sender<Event>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut buf = [0u8; 8192];
@@ -518,9 +582,8 @@ fn spawn_stream_pump(
             match reader.read(&mut buf).await {
                 Ok(0) => break,
                 Ok(n) => {
-                    let chunk = buf[..n].to_vec();
                     if sender
-                        .send(StreamMessage::Data { name, chunk })
+                        .send(Event::Data(name, buf[..n].to_vec()))
                         .await
                         .is_err()
                     {
@@ -528,12 +591,7 @@ fn spawn_stream_pump(
                     }
                 }
                 Err(e) => {
-                    let _ = sender
-                        .send(StreamMessage::Error {
-                            name,
-                            error: e.to_string(),
-                        })
-                        .await;
+                    warn!(%name, error = %e, "error while reading ssh stream");
                     break;
                 }
             }
@@ -541,7 +599,8 @@ fn spawn_stream_pump(
     })
 }
 
-#[cfg(test)]
+// Runs the remote command locally with bash.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     #[test]

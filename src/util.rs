@@ -4,21 +4,25 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use shell_escape::escape;
-
 use crate::errors::{AppError, AppResult};
 
+/// The local user's home directory ($HOME on Unix, the user profile on Windows).
+pub fn home_dir() -> AppResult<PathBuf> {
+    env::home_dir()
+        .filter(|p| !p.as_os_str().is_empty())
+        .ok_or_else(|| AppError::Io("cannot determine home directory".into()))
+}
+
 pub fn expand_path(input: &str) -> AppResult<PathBuf> {
-    if input.starts_with("~/") || input == "~" {
-        let home = env::var("HOME").map_err(|e| AppError::Io(format!("HOME not set: {e}")))?;
-        let trimmed = if input == "~" { "" } else { &input[2..] };
-        if trimmed.is_empty() {
-            Ok(PathBuf::from(home))
-        } else {
-            Ok(Path::new(&home).join(trimmed))
-        }
-    } else {
-        Ok(PathBuf::from(input))
+    if input == "~" {
+        return home_dir();
+    }
+    match input
+        .strip_prefix("~/")
+        .or_else(|| input.strip_prefix("~\\"))
+    {
+        Some(rest) => Ok(home_dir()?.join(Path::new(rest))),
+        None => Ok(PathBuf::from(input)),
     }
 }
 
@@ -26,8 +30,11 @@ pub fn join_user_host(user: &str, host: &str) -> String {
     format!("{user}@{host}")
 }
 
+/// Quote for the cluster's POSIX shell. Always use POSIX rules:
+/// `shell_escape::escape` switches to cmd.exe quoting on Windows, which the
+/// remote shell would misread.
 pub fn escape_for_shell(value: &str) -> String {
-    escape(Cow::Borrowed(value)).to_string()
+    shell_escape::unix::escape(Cow::Borrowed(value)).to_string()
 }
 
 pub fn format_duration(duration: Duration) -> String {
@@ -67,7 +74,14 @@ impl TailBuffer {
 
 #[cfg(test)]
 mod tests {
-    use super::{TailBuffer, expand_path, validate_env};
+    use super::{TailBuffer, escape_for_shell, expand_path, validate_env};
+
+    #[test]
+    fn quotes_for_the_remote_posix_shell_on_every_platform() {
+        assert_eq!(escape_for_shell("plain"), "plain");
+        assert_eq!(escape_for_shell("a b"), "'a b'");
+        assert_eq!(escape_for_shell("it's $HOME"), r"'it'\''s $HOME'");
+    }
 
     #[test]
     fn validate_environment_names_and_bare_home() {
@@ -75,9 +89,12 @@ mod tests {
         for key in ["", "1BAD", "BAD;echo", "A=B"] {
             assert!(validate_env(&[(key.into(), "x".into())].into()).is_err());
         }
+        let home = std::env::home_dir().unwrap();
+        assert_eq!(expand_path("~").unwrap(), home);
+        assert_eq!(expand_path("~/a/b").unwrap(), home.join("a").join("b"));
         assert_eq!(
-            expand_path("~").unwrap(),
-            std::path::PathBuf::from(std::env::var("HOME").unwrap())
+            expand_path("/abs").unwrap(),
+            std::path::PathBuf::from("/abs")
         );
     }
 
