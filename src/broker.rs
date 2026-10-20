@@ -1317,6 +1317,28 @@ fn spawn_background(context: &SshContext, config_path: &Path) -> AppResult<PathB
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
         const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
         let base = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
+        // A Windows child inherits every inheritable handle, not just the
+        // stdio it is given. Keep the long-lived connection from holding this
+        // command's own stdout/stderr open: a caller capturing `ghm up`'s
+        // output would otherwise wait forever. Spawn passes the child its own
+        // inheritable copies, so clearing the flag here is safe.
+        {
+            use windows_sys::Win32::Foundation::{
+                HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,
+            };
+            use windows_sys::Win32::System::Console::{
+                GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+            };
+            for id in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+                // SAFETY: plain Win32 calls on this process's standard handles.
+                unsafe {
+                    let handle = GetStdHandle(id);
+                    if !handle.is_null() && handle != INVALID_HANDLE_VALUE {
+                        SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0);
+                    }
+                }
+            }
+        }
         // Leave the terminal's job object when allowed, so closing the
         // terminal window does not kill the connection.
         command.creation_flags(base | CREATE_BREAKAWAY_FROM_JOB);
