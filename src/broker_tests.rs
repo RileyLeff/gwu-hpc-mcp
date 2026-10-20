@@ -229,9 +229,12 @@ async fn run_command(
     mut killed: oneshot::Receiver<()>,
     counters: Arc<Counters>,
 ) {
+    // Pass the command in the environment: Git Bash parses its Windows command
+    // line with Cygwin rules, which would mangle single-quoted arguments.
     let mut child = tokio::process::Command::new(shell().unwrap())
         .arg("-c")
-        .arg(&command)
+        .arg(r#"eval "$GHM_TEST_COMMAND""#)
+        .env("GHM_TEST_COMMAND", &command)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
