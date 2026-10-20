@@ -202,7 +202,7 @@ async fn cmd_up(
         .await?;
         if !args.foreground {
             println!(
-                "Cluster connection is active. It stays open after this terminal closes; run `down` to close it."
+                "Cluster connection is active. It stays open after this terminal closes; run `ghm down` to close it."
             );
         }
         return Ok(());
@@ -360,8 +360,10 @@ async fn cmd_doctor(
     println!("Connection: {}", context.connection_endpoint()?);
     match ssh::check_master(&context).await {
         Ok(MasterState::Running) => println!("Cluster connection: running"),
-        Ok(MasterState::Missing) => println!("Cluster connection: missing (run `up`)"),
-        Ok(MasterState::Stale) => println!("Cluster connection: stale (run `down` then `up`)"),
+        Ok(MasterState::Missing) => println!("Cluster connection: missing (run `ghm up`)"),
+        Ok(MasterState::Stale) => {
+            println!("Cluster connection: stale (run `ghm down` then `ghm up`)")
+        }
         Err(err) => println!("Cluster connection check failed: {}", err),
     }
     Ok(())
