@@ -258,11 +258,12 @@ editing it by hand. Install dist with `brew install cargo-dist` or from its
    platform and needs `cargo-zigbuild` and `cargo-xwin` to cross-compile.
    Output lands in `target/distrib/`.
 
-3. Tag and push. The tag must match the `Cargo.toml` version:
+3. Tag and push. The tag must be `v` plus the `Cargo.toml` version (shown here
+   for 1.2.3):
 
    ```sh
-   git tag v0.1.4
-   git push upstream v0.1.4
+   git tag v1.2.3
+   git push upstream v1.2.3
    ```
 
 The workflow builds every target, then creates a GitHub Release with the
