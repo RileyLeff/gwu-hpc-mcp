@@ -272,8 +272,8 @@ async fn cmd_status(
     println!("Connection: {endpoint}");
     match state {
         MasterState::Running => println!("Status: running"),
-        MasterState::Missing => println!("Status: missing (run `gwu-hpc-mcp up`)"),
-        MasterState::Stale => println!("Status: stale (run `gwu-hpc-mcp down` then `up`)"),
+        MasterState::Missing => println!("Status: missing (run `ghm up`)"),
+        MasterState::Stale => println!("Status: stale (run `ghm down` then `ghm up`)"),
     }
     Ok(())
 }
@@ -403,7 +403,7 @@ async fn ensure_master(context: &SshContext, remote_user: &str) -> AppResult<()>
     match ssh::check_master(context).await? {
         MasterState::Running => Ok(()),
         MasterState::Missing | MasterState::Stale => Err(AppError::Needs2fa(format!(
-            "Run: gwu-hpc-mcp up --cluster {} --user {}",
+            "`ghm up --cluster {} --user {}`",
             context.cluster.id, remote_user
         ))),
     }

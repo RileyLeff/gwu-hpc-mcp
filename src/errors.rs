@@ -6,7 +6,9 @@ pub type AppResult<T> = Result<T, AppError>;
 
 #[derive(Debug, Error)]
 pub enum AppError {
-    #[error("ControlMaster requires 2FA: run {0}")]
+    #[error(
+        "Cluster connection is not running; the user must run {0} in their own terminal and complete 2FA"
+    )]
     Needs2fa(String),
     #[allow(dead_code)]
     #[error("ControlMaster not running")]
